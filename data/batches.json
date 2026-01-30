@@ -1,0 +1,16 @@
+{
+  "batches": [
+    {
+      "batch_id": "B001",
+      "batch_name": "CSE Batch A",
+      "semester": "4",
+      "total_students": 0
+    },
+    {
+      "batch_id": "B002",
+      "batch_name": "CSE Batch B",
+      "semester": "4",
+      "total_students": 0
+    }
+  ]
+}

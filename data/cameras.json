@@ -1,0 +1,12 @@
+{
+  "cameras": [
+    {
+      "camera_id": "CAM_001",
+      "camera_name": "Laptop Camera",
+      "location": "Local",
+      "ip_address": "127.0.0.1",
+      "batch_id": "B001",
+      "is_active": true
+    }
+  ]
+}
