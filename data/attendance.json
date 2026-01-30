@@ -12,70 +12,15 @@
       "confidence_score": 0.95
     },
     {
-      "attendance_id": "7bc8c7aa-8aba-4235-8588-ed7dfca0491c",
+      "attendance_id": "8539d829-a799-4c47-9f5e-ec6604477ce8",
       "student_id": "STU_2410990250",
       "roll_number": "2410990250",
       "camera_id": "CAM_001",
-      "timestamp": "2026-01-30T15:26:02.898678",
-      "subject_id": "S001",
+      "timestamp": "2026-01-30T23:19:14.546320",
+      "subject_id": "S002",
       "batch_id": "B001",
-      "status": "LATE",
-      "confidence_score": 0.6083095431546278
-    },
-    {
-      "attendance_id": "a427341e-3081-447f-ae12-19e8b6d4a997",
-      "student_id": "STU_2410990315",
-      "roll_number": "2410990315",
-      "camera_id": "CAM_001",
-      "timestamp": "2026-01-30T15:26:27.459341",
-      "subject_id": "S001",
-      "batch_id": "B001",
-      "status": "LATE",
-      "confidence_score": 0.5243323068106212
-    },
-    {
-      "attendance_id": "9a1dca58-eecb-4933-b9e6-56ad2fa0cf55",
-      "student_id": "STU_2410990250",
-      "roll_number": "2410990250",
-      "camera_id": "CAM_001",
-      "timestamp": "2026-01-30T15:26:35.704195",
-      "subject_id": "S001",
-      "batch_id": "B001",
-      "status": "LATE",
-      "confidence_score": 0.5255211598681443
-    },
-    {
-      "attendance_id": "9d7f8ecc-cc90-4613-a8ed-d497c6288a8e",
-      "student_id": "STU_2410990250",
-      "roll_number": "2410990250",
-      "camera_id": "CAM_001",
-      "timestamp": "2026-01-30T15:27:28.271479",
-      "subject_id": "S001",
-      "batch_id": "B001",
-      "status": "LATE",
-      "confidence_score": 0.5125201571443594
-    },
-    {
-      "attendance_id": "3b566760-ca43-463c-9c3a-f9e3c73af937",
-      "student_id": "STU_2410990315",
-      "roll_number": "2410990315",
-      "camera_id": "CAM_001",
-      "timestamp": "2026-01-30T15:27:30.962307",
-      "subject_id": "S001",
-      "batch_id": "B001",
-      "status": "LATE",
-      "confidence_score": 0.5040161971579887
-    },
-    {
-      "attendance_id": "2997b837-0a14-41cf-bd20-d55493a3cd26",
-      "student_id": "STU_2410990250",
-      "roll_number": "2410990250",
-      "camera_id": "CAM_001",
-      "timestamp": "2026-01-30T15:27:59.871497",
-      "subject_id": "S001",
-      "batch_id": "B001",
-      "status": "LATE",
-      "confidence_score": 0.5135898992238247
+      "status": "PRESENT",
+      "confidence_score": 0.5539822375861916
     }
   ]
 }

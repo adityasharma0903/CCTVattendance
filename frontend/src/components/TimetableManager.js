@@ -5,6 +5,7 @@ function TimetableManager({ apiBase }) {
   const [batches, setBatches] = useState([]);
   const [subjects, setSubjects] = useState([]);
   const [teachers, setTeachers] = useState([]);
+  const [cameras, setCameras] = useState([]);
   const [formData, setFormData] = useState({
     timetable_id: '',
     batch_id: '',
@@ -24,6 +25,7 @@ function TimetableManager({ apiBase }) {
     fetchBatches();
     fetchSubjects();
     fetchTeachers();
+    fetchCameras();
   }, []);
 
   const fetchTimetables = async () => {
@@ -66,6 +68,16 @@ function TimetableManager({ apiBase }) {
     }
   };
 
+  const fetchCameras = async () => {
+    try {
+      const response = await fetch(`${apiBase}/cameras`);
+      const data = await response.json();
+      setCameras(data);
+    } catch (error) {
+      console.error('Error fetching cameras:', error);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
@@ -76,6 +88,22 @@ function TimetableManager({ apiBase }) {
       });
       
       if (response.ok) {
+        // Auto-link timetable to first available camera
+        if (cameras.length > 0) {
+          const cameraId = cameras[0].camera_id;
+          const schedulePayload = {
+            schedule_id: `CS_${Date.now()}`,
+            camera_id: cameraId,
+            timetable_id: formData.timetable_id,
+            is_active: true
+          };
+          await fetch(`${apiBase}/camera-schedule`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(schedulePayload)
+          });
+        }
+
         fetchTimetables();
         setFormData({
           timetable_id: '',

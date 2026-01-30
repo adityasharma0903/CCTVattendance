@@ -5,6 +5,9 @@ echo ========================================
 echo.
 
 cd camera_service
-call venv\Scripts\activate.bat
-python attendance_service.py
+echo Current directory: %CD%
+echo.
+echo Starting with virtual environment Python...
+echo.
+venv\Scripts\python.exe attendance_service.py
 pause

@@ -7,27 +7,9 @@
       "is_active": true
     },
     {
-      "schedule_id": "CS002",
+      "schedule_id": "CS_1769795337865",
       "camera_id": "CAM_001",
       "timetable_id": "TT002",
-      "is_active": true
-    },
-    {
-      "schedule_id": "CS003",
-      "camera_id": "CAM_001",
-      "timetable_id": "TT003",
-      "is_active": true
-    },
-    {
-      "schedule_id": "CS005",
-      "camera_id": "CAM_001",
-      "timetable_id": "TT008",
-      "is_active": true
-    },
-    {
-      "schedule_id": "CS004",
-      "camera_id": "CAM_002",
-      "timetable_id": "TT004",
       "is_active": true
     }
   ]

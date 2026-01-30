@@ -28,8 +28,8 @@ BACKEND_API = "http://localhost:8000/api"
 SIMILARITY_THRESHOLD = 0.5
 MODEL = "ArcFace"
 DETECTION_INTERVAL = 2.0
-ATTENDANCE_COOLDOWN = 30  # 30 seconds (for testing, change to 300 for production)
-TEST_MODE_ALWAYS_ACTIVE = True  # True = mark attendance even without active timetable
+ATTENDANCE_COOLDOWN = 30  # Seconds cooldown between camera detections (database check handles duplicates)
+TEST_MODE_ALWAYS_ACTIVE = False  # False = only mark during scheduled time, True = always mark
 PROCESS_EVERY_N_FRAMES = 15  # Reduce heavy DeepFace calls
 
 # ============================================================================
@@ -207,6 +207,44 @@ class CameraAttendance:
                 logger.debug(f"Cooldown active for {roll_number}")
                 return False
         
+        # Check if already marked for this class today
+        schedule = current_schedule
+        student = self.face_db.get_student_by_roll(roll_number)
+        
+        if not student or not schedule:
+            return False
+        
+        try:
+            # Check existing attendance for today
+            today = datetime.now().strftime("%Y-%m-%d")
+            check_url = f"{BACKEND_API}/attendance-check"
+            params = {
+                "roll_number": roll_number,
+                "date": today,
+                "subject_id": schedule.get("subject_id"),
+                "batch_id": self.batch_id
+            }
+            
+            logger.info(f"🔍 Checking existing attendance: {params}")
+            response = requests.get(check_url, params=params, timeout=5)
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"📋 Check response: {result}")
+                
+                if isinstance(result, dict) and result.get("exists"):
+                    logger.info(f"⚠️ {student.get('name')} already marked for this class today")
+                    return False
+                else:
+                    logger.info(f"✅ No existing attendance found, proceeding to mark")
+            else:
+                logger.warning(f"Backend check failed with status {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Could not check existing attendance (network error): {e}")
+        except Exception as e:
+            logger.warning(f"Could not check existing attendance: {e}")
+            logger.info(f"Response content: {response.text if 'response' in locals() else 'No response'}")
+        
         # Determine status
         schedule = current_schedule
         student = self.face_db.get_student_by_roll(roll_number)
@@ -238,7 +276,9 @@ class CameraAttendance:
         try:
             response = requests.post(f"{BACKEND_API}/attendance", json=attendance_data)
             if response.status_code == 200:
-                logger.info(f"✅ Marked {student.get('name')} ({roll_number}) - {status}")
+                time_slot = f"{schedule.get('start_time').strftime('%H:%M')}-{schedule.get('end_time').strftime('%H:%M')}"
+                logger.info(f"✅ Attendance Marked: {student.get('name')} ({roll_number}) - {status}")
+                logger.info(f"   📚 Subject: {schedule.get('subject_id')} | ⏰ Time Slot: {time_slot}")
                 self.last_marked[roll_number] = current_time
                 return True
             else:

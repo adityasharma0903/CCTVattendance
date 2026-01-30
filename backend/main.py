@@ -420,6 +420,23 @@ async def get_student_attendance(roll_number: str):
     student_attendance = [a for a in attendance.get("attendance", []) if a.get("roll_number") == roll_number]
     return student_attendance
 
+@app.get("/api/attendance-check")
+async def check_attendance_exists(roll_number: str, date: str, subject_id: str, batch_id: str):
+    """Check if attendance already exists for student on given date and subject"""
+    attendance_data = load_json_file("attendance.json")
+    
+    for record in attendance_data.get("attendance", []):
+        # Check if same student, subject, batch, and same day
+        record_date = record.get("timestamp", "")[:10]  # Get YYYY-MM-DD part
+        
+        if (record.get("roll_number") == roll_number and
+            record.get("subject_id") == subject_id and
+            record.get("batch_id") == batch_id and
+            record_date == date):
+            return {"exists": True, "record": record}
+    
+    return {"exists": False}
+
 @app.post("/api/attendance")
 async def mark_attendance(record: Dict):
     """Mark attendance for a student"""

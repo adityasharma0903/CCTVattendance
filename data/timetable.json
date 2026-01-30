@@ -13,50 +13,10 @@
     {
       "timetable_id": "TT002",
       "batch_id": "B001",
-      "day": "Monday",
-      "period": 2,
-      "start_time": "10:30",
-      "end_time": "12:00",
-      "subject_id": "S002",
-      "teacher_id": "T002"
-    },
-    {
-      "timetable_id": "TT003",
-      "batch_id": "B001",
-      "day": "Tuesday",
-      "period": 1,
-      "start_time": "09:00",
-      "end_time": "10:30",
-      "subject_id": "S003",
-      "teacher_id": "T001"
-    },
-    {
-      "timetable_id": "TT004",
-      "batch_id": "B002",
-      "day": "Monday",
-      "period": 1,
-      "start_time": "09:00",
-      "end_time": "10:30",
-      "subject_id": "S002",
-      "teacher_id": "T002"
-    },
-    {
-      "timetable_id": "TT008",
-      "batch_id": "B001",
       "day": "Friday",
-      "period": 4,
-      "start_time": "12:00",
-      "end_time": "13:00",
-      "subject_id": "S001",
-      "teacher_id": "T001"
-    },
-    {
-      "timetable_id": "TT0000001",
-      "batch_id": "B001",
-      "day": "Friday",
-      "period": "7",
-      "start_time": "15:00",
-      "end_time": "15:00",
+      "period": "2",
+      "start_time": "23:19",
+      "end_time": "23:30",
       "subject_id": "S002",
       "teacher_id": "T001"
     }
