@@ -21,6 +21,50 @@
       "batch_id": "B001",
       "status": "PRESENT",
       "confidence_score": 0.5539822375861916
+    },
+    {
+      "attendance_id": "45942809-21de-4359-a677-b853ec8c7d66",
+      "student_id": "STU_2410990315",
+      "roll_number": "2410990315",
+      "camera_id": "CAM_001",
+      "timestamp": "2026-01-31T09:34:12.420266",
+      "subject_id": "S001",
+      "batch_id": "B001",
+      "status": "PRESENT",
+      "confidence_score": 0.5342759143746756
+    },
+    {
+      "attendance_id": "b6aa2657-a37b-43c5-a4a3-09c69c404a11",
+      "student_id": "STU_2410990250",
+      "roll_number": "2410990250",
+      "camera_id": "CAM_001",
+      "timestamp": "2026-01-31T09:34:55.033947",
+      "subject_id": "S001",
+      "batch_id": "B001",
+      "status": "PRESENT",
+      "confidence_score": 0.5138201025261725
+    },
+    {
+      "attendance_id": "132fc7b4-afe7-4ba8-9bf1-5847403c11af",
+      "student_id": "STU_2410990250",
+      "roll_number": "2410990250",
+      "camera_id": "CAM_001",
+      "timestamp": "2026-01-31T10:47:04.143079",
+      "subject_id": "S002",
+      "batch_id": "B001",
+      "status": "PRESENT",
+      "confidence_score": 0.5284659579442731
+    },
+    {
+      "attendance_id": "ec7737ee-0476-4620-9f1a-5ab645018489",
+      "student_id": "STU_2410990315",
+      "roll_number": "2410990315",
+      "camera_id": "CAM_001",
+      "timestamp": "2026-01-31T10:47:13.784154",
+      "subject_id": "S002",
+      "batch_id": "B001",
+      "status": "PRESENT",
+      "confidence_score": 0.583791504059239
     }
   ]
 }

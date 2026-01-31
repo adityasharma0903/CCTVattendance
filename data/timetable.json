@@ -19,6 +19,38 @@
       "end_time": "23:30",
       "subject_id": "S002",
       "teacher_id": "T001"
+    },
+    {
+      "timetable_id": "TT03",
+      "batch_id": "B001",
+      "day": "Saturday",
+      "period": "2",
+      "start_time": "09:33",
+      "end_time": "09:40",
+      "subject_id": "S001",
+      "teacher_id": "T001"
+    },
+    {
+      "timetable_id": "TTTTT000000111",
+      "batch_id": "B001",
+      "day": "Saturday",
+      "period": "8",
+      "start_time": "10:50",
+      "end_time": "10:52",
+      "subject_id": "S002",
+      "teacher_id": "T002",
+      "is_exam": false
+    },
+    {
+      "timetable_id": "zsdxfcgvhbjn",
+      "batch_id": "B001",
+      "day": "Saturday",
+      "period": "9",
+      "start_time": "10:53",
+      "end_time": "10:57",
+      "subject_id": "S002",
+      "teacher_id": "T001",
+      "is_exam": true
     }
   ]
 }

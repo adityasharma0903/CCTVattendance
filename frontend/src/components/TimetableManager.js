@@ -14,7 +14,8 @@ function TimetableManager({ apiBase }) {
     start_time: '',
     end_time: '',
     subject_id: '',
-    teacher_id: ''
+    teacher_id: '',
+    is_exam: false
   });
   const [showForm, setShowForm] = useState(false);
 
@@ -113,7 +114,8 @@ function TimetableManager({ apiBase }) {
           start_time: '',
           end_time: '',
           subject_id: '',
-          teacher_id: ''
+          teacher_id: '',
+          is_exam: false
         });
         setShowForm(false);
         alert('✅ Timetable entry added successfully!');
@@ -204,6 +206,14 @@ function TimetableManager({ apiBase }) {
               </option>
             ))}
           </select>
+          <label>
+            <input
+              type="checkbox"
+              checked={formData.is_exam}
+              onChange={(e) => setFormData({...formData, is_exam: e.target.checked})}
+            />
+            Exam Time Slot
+          </label>
           <button type="submit" className="btn btn-success">Save Timetable Entry</button>
         </form>
       )}
@@ -217,6 +227,7 @@ function TimetableManager({ apiBase }) {
             <th>Time</th>
             <th>Subject</th>
             <th>Teacher</th>
+            <th>Type</th>
           </tr>
         </thead>
         <tbody>
@@ -231,6 +242,7 @@ function TimetableManager({ apiBase }) {
                 <td>{tt.start_time} - {tt.end_time}</td>
                 <td>{subject?.subject_name || 'N/A'}</td>
                 <td>{teacher?.name || 'N/A'}</td>
+                <td>{tt.is_exam ? 'EXAM' : 'CLASS'}</td>
               </tr>
             );
           })}

@@ -9,6 +9,8 @@ import requests
 import threading
 from apscheduler.schedulers.background import BackgroundScheduler
 import logging
+import smtplib
+from email.message import EmailMessage
 
 # ============================================================================
 # LOGGING SETUP
@@ -31,6 +33,10 @@ DETECTION_INTERVAL = 2.0
 ATTENDANCE_COOLDOWN = 30  # Seconds cooldown between camera detections (database check handles duplicates)
 TEST_MODE_ALWAYS_ACTIVE = False  # False = only mark during scheduled time, True = always mark
 PROCESS_EVERY_N_FRAMES = 15  # Reduce heavy DeepFace calls
+MODE_CHECK_INTERVAL = 5  # seconds
+EXAM_DETECT_INTERVAL = 1  # seconds
+PHONE_CONSEC_FRAMES = 5
+EXAM_ALERT_COOLDOWN = 60  # seconds
 
 # ============================================================================
 # UTILITIES
@@ -91,8 +97,114 @@ class CameraAttendance:
         self.last_marked = {}  # {"roll_number": timestamp}
         self.is_recording = False
         self.last_schedule_log = None
+        self.cached_mode = "NORMAL"
+        self.last_mode_check = None
+        self.phone_detect_count = 0
+        self.last_alert_time = None
+        self.yolo_model = None
+        self.last_exam_check = None
+
+    def get_camera_mode(self):
+        """Fetch camera mode from backend with caching"""
+        now = datetime.now()
+        if self.last_mode_check and (now - self.last_mode_check).total_seconds() < MODE_CHECK_INTERVAL:
+            return self.cached_mode
+
+        try:
+            response = requests.get(f"{BACKEND_API}/camera-mode/{self.camera_id}", timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                mode = data.get("mode", "NORMAL")
+                self.cached_mode = mode
+        except Exception as e:
+            logger.warning(f"Could not fetch camera mode: {e}")
+
+        self.last_mode_check = now
+        return self.cached_mode
+
+    def send_exam_alert(self, subject_id, time_slot):
+        """Send exam alert email if SMTP is configured"""
+        smtp_host = os.getenv("SMTP_HOST")
+        smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        smtp_user = os.getenv("SMTP_USER")
+        smtp_pass = os.getenv("SMTP_PASS")
+        email_to = os.getenv("EXAM_ALERT_EMAIL_TO")
+        email_from = os.getenv("EXAM_ALERT_EMAIL_FROM", smtp_user)
+
+        if not smtp_host or not smtp_user or not smtp_pass or not email_to:
+            logger.warning("Exam alert email not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS, EXAM_ALERT_EMAIL_TO")
+            return
+
+        msg = EmailMessage()
+        msg["Subject"] = "Exam Cheating Alert"
+        msg["From"] = email_from
+        msg["To"] = email_to
+        msg.set_content(
+            f"Mobile phone detected.\n"
+            f"Room: {self.camera_name}\n"
+            f"Camera ID: {self.camera_id}\n"
+            f"Subject: {subject_id}\n"
+            f"Time Slot: {time_slot}\n"
+            f"Time: {datetime.now().strftime('%H:%M:%S')}\n\n"
+            f"Please verify."
+        )
+
+        try:
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+            logger.info("📧 Exam alert email sent")
+        except Exception as e:
+            logger.error(f"Failed to send exam alert email: {e}")
+
+    def detect_phone_in_frame(self, frame):
+        """Detect mobile phone using YOLO (ultralytics)"""
+        try:
+            if self.yolo_model is None:
+                from ultralytics import YOLO
+                self.yolo_model = YOLO("yolov8n.pt")
+
+            results = self.yolo_model(frame, verbose=False)
+            for result in results:
+                for box in result.boxes:
+                    cls_id = int(box.cls[0])
+                    cls_name = result.names.get(cls_id, "")
+                    if cls_name == "cell phone":
+                        return True
+            return False
+        except Exception as e:
+            logger.error(f"Phone detection error: {e}")
+            return False
+
+    def handle_exam_frame(self, frame, schedule):
+        """Handle exam mode logic"""
+        now = datetime.now()
+        if self.last_exam_check and (now - self.last_exam_check).total_seconds() < EXAM_DETECT_INTERVAL:
+            return {"status": "exam_monitoring"}
+        self.last_exam_check = now
+
+        detected = self.detect_phone_in_frame(frame)
+        if detected:
+            self.phone_detect_count += 1
+            logger.info("📱 Phone detected in exam mode")
+        else:
+            self.phone_detect_count = 0
+
+        if self.phone_detect_count >= PHONE_CONSEC_FRAMES:
+            now = datetime.now()
+            if not self.last_alert_time or (now - self.last_alert_time).total_seconds() > EXAM_ALERT_COOLDOWN:
+                time_slot = f"{schedule.get('start_time').strftime('%H:%M')}-{schedule.get('end_time').strftime('%H:%M')}"
+                logger.warning(f"🚨 Exam alert: Mobile phone detected | Subject {schedule.get('subject_id')} | {time_slot}")
+                self.send_exam_alert(schedule.get("subject_id"), time_slot)
+                self.last_alert_time = now
+            return {"status": "exam_alert"}
+
+        if detected:
+            return {"status": "phone_detected"}
+        return {"status": "exam_monitoring"}
     
-    def get_current_schedule(self):
+    def get_current_schedule(self, require_exam=False):
         """Get current class schedule for this camera"""
         current_day = datetime.now().strftime("%A")
         current_time = datetime.now().time()
@@ -111,6 +223,8 @@ class CameraAttendance:
                 # Find corresponding timetable entry
                 for tt in timetable_data:
                     if tt.get("timetable_id") == timetable_id:
+                        if require_exam and not tt.get("is_exam"):
+                            continue
                         if tt.get("day") == current_day:
                             start_time = datetime.strptime(tt.get("start_time"), "%H:%M").time()
                             end_time = datetime.strptime(tt.get("end_time"), "%H:%M").time()
@@ -128,7 +242,7 @@ class CameraAttendance:
             return active_schedule
 
         # Test mode: allow attendance even without active schedule
-        if TEST_MODE_ALWAYS_ACTIVE:
+        if TEST_MODE_ALWAYS_ACTIVE and not require_exam:
             if camera_schedule and timetable_data:
                 # Try to use the first linked timetable entry for subject/teacher
                 for schedule in camera_schedule:
@@ -290,10 +404,16 @@ class CameraAttendance:
     
     def process_frame(self, frame):
         """Process a single frame"""
-        schedule = self.get_current_schedule()
-        
+        mode = self.get_camera_mode()
+        schedule = self.get_current_schedule(require_exam=(mode == "EXAM"))
+
         if not schedule:
-            return {"status": "no_schedule"}
+            return {"status": "no_schedule", "mode": mode}
+
+        if mode == "EXAM":
+            result = self.handle_exam_frame(frame, schedule)
+            result["mode"] = mode
+            return result
         
         # Detect faces
         recognized = self.detect_faces_in_frame(frame)
@@ -310,9 +430,9 @@ class CameraAttendance:
                 if marked:
                     # Add visual indicator on frame
                     return {"status": "marked", "student": student}
-            return {"status": "recognized", "recognized": recognized}
+            return {"status": "recognized", "recognized": recognized, "mode": mode}
 
-        return {"status": "no_face"}
+        return {"status": "no_face", "mode": mode}
     
     def find_available_camera(self):
         """Find available camera on system"""
@@ -388,6 +508,10 @@ class CameraAttendance:
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 cv2.putText(frame, f"Frame: {frame_count}", (10, 70),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                if detection_result:
+                    mode_text = detection_result.get("mode", "NORMAL")
+                    cv2.putText(frame, f"Mode: {mode_text}", (10, 100),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
                 
                 # Show detection results
                 if detection_result:
@@ -395,15 +519,21 @@ class CameraAttendance:
                     if status == "marked":
                         student = detection_result.get("student", {})
                         name = student.get("name", "Unknown")
-                        cv2.putText(frame, f"✅ ATTENDANCE MARKED: {name}", (10, 110),
+                        cv2.putText(frame, f"✅ ATTENDANCE MARKED: {name}", (10, 140),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 3)
                         last_detection = datetime.now()
                     elif status == "recognized":
                         count = len(detection_result.get("recognized", []))
-                        cv2.putText(frame, f"🔎 Detected {count} face(s)", (10, 110),
+                        cv2.putText(frame, f"🔎 Detected {count} face(s)", (10, 140),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                     elif status == "no_schedule":
-                        cv2.putText(frame, "⏱️ No active schedule", (10, 110),
+                        cv2.putText(frame, "⏱️ No active schedule", (10, 140),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    elif status == "phone_detected":
+                        cv2.putText(frame, "📱 Phone detected (exam mode)", (10, 140),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                    elif status == "exam_alert":
+                        cv2.putText(frame, "🚨 EXAM ALERT SENT", (10, 140),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 
                 # Show message to quit

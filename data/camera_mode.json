@@ -1,0 +1,8 @@
+{
+  "camera_modes": [
+    {
+      "camera_id": "CAM_001",
+      "mode": "EXAM"
+    }
+  ]
+}

@@ -316,9 +316,58 @@ async def add_camera(camera: Dict):
     cameras_data.setdefault("cameras", []).append(new_camera)
     
     if save_json_file("cameras.json", cameras_data):
+        # Ensure default mode for new camera
+        mode_data = load_json_file("camera_mode.json")
+        mode_data.setdefault("camera_modes", [])
+        existing = [m for m in mode_data.get("camera_modes", []) if m.get("camera_id") == new_camera.get("camera_id")]
+        if not existing:
+            mode_data["camera_modes"].append({
+                "camera_id": new_camera.get("camera_id"),
+                "mode": "NORMAL"
+            })
+            save_json_file("camera_mode.json", mode_data)
         return {"status": "success", "message": "Camera added successfully"}
     else:
         raise HTTPException(status_code=500, detail="Failed to add camera")
+
+# ============================================================================
+# CAMERA MODE ENDPOINTS
+# ============================================================================
+
+@app.get("/api/camera-mode/{camera_id}")
+async def get_camera_mode(camera_id: str):
+    """Get mode for a specific camera"""
+    mode_data = load_json_file("camera_mode.json")
+    for entry in mode_data.get("camera_modes", []):
+        if entry.get("camera_id") == camera_id:
+            return {"camera_id": camera_id, "mode": entry.get("mode", "NORMAL")}
+    return {"camera_id": camera_id, "mode": "NORMAL"}
+
+@app.post("/api/camera-mode")
+async def set_camera_mode(payload: Dict):
+    """Set mode for a camera"""
+    camera_id = payload.get("camera_id")
+    mode = payload.get("mode", "NORMAL")
+    if mode not in ["NORMAL", "EXAM"]:
+        raise HTTPException(status_code=400, detail="Invalid mode")
+
+    mode_data = load_json_file("camera_mode.json")
+    mode_data.setdefault("camera_modes", [])
+
+    updated = False
+    for entry in mode_data.get("camera_modes", []):
+        if entry.get("camera_id") == camera_id:
+            entry["mode"] = mode
+            updated = True
+            break
+
+    if not updated:
+        mode_data["camera_modes"].append({"camera_id": camera_id, "mode": mode})
+
+    if save_json_file("camera_mode.json", mode_data):
+        return {"status": "success", "camera_id": camera_id, "mode": mode}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to set camera mode")
 
 # ============================================================================
 # TIMETABLE ENDPOINTS
@@ -350,7 +399,8 @@ async def add_timetable(entry: Dict):
         "start_time": entry.get("start_time"),
         "end_time": entry.get("end_time"),
         "subject_id": entry.get("subject_id"),
-        "teacher_id": entry.get("teacher_id")
+        "teacher_id": entry.get("teacher_id"),
+        "is_exam": entry.get("is_exam", False)
     }
     
     timetable_data.setdefault("timetable", []).append(new_entry)

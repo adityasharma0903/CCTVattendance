@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 function CameraManager({ apiBase }) {
   const [cameras, setCameras] = useState([]);
   const [batches, setBatches] = useState([]);
+  const [cameraModes, setCameraModes] = useState({});
   const [formData, setFormData] = useState({
     camera_id: '',
     camera_name: '',
@@ -23,8 +24,39 @@ function CameraManager({ apiBase }) {
       const response = await fetch(`${apiBase}/cameras`);
       const data = await response.json();
       setCameras(data);
+      fetchCameraModes(data);
     } catch (error) {
       console.error('Error fetching cameras:', error);
+    }
+  };
+
+  const fetchCameraModes = async (cameraList) => {
+    try {
+      const modeEntries = await Promise.all(
+        cameraList.map(async (camera) => {
+          const response = await fetch(`${apiBase}/camera-mode/${camera.camera_id}`);
+          const data = await response.json();
+          return [camera.camera_id, data.mode || 'NORMAL'];
+        })
+      );
+      setCameraModes(Object.fromEntries(modeEntries));
+    } catch (error) {
+      console.error('Error fetching camera modes:', error);
+    }
+  };
+
+  const updateCameraMode = async (cameraId, mode) => {
+    try {
+      const response = await fetch(`${apiBase}/camera-mode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ camera_id: cameraId, mode })
+      });
+      if (response.ok) {
+        setCameraModes(prev => ({ ...prev, [cameraId]: mode }));
+      }
+    } catch (error) {
+      console.error('Error updating camera mode:', error);
     }
   };
 
@@ -136,6 +168,8 @@ function CameraManager({ apiBase }) {
             <th>IP Address</th>
             <th>Batch</th>
             <th>Status</th>
+            <th>Mode</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -147,6 +181,21 @@ function CameraManager({ apiBase }) {
               <td>{camera.ip_address}</td>
               <td>{camera.batch_id}</td>
               <td>{camera.is_active ? '✅ Active' : '❌ Inactive'}</td>
+              <td>{cameraModes[camera.camera_id] || 'NORMAL'}</td>
+              <td>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => updateCameraMode(camera.camera_id, 'NORMAL')}
+                >
+                  Normal Mode
+                </button>
+                <button
+                  className="btn btn-danger"
+                  onClick={() => updateCameraMode(camera.camera_id, 'EXAM')}
+                >
+                  Exam Mode
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>
