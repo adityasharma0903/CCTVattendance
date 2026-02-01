@@ -101,6 +101,18 @@
       "camera_id": "CAM_001",
       "timetable_id": "ytfdyghfvo",
       "is_active": true
+    },
+    {
+      "schedule_id": "CS_1769940838141",
+      "camera_id": "CAM_001",
+      "timetable_id": "TT098765432",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1769943867207",
+      "camera_id": "CAM_001",
+      "timetable_id": "q7y89u9i0skxm c",
+      "is_active": true
     }
   ]
 }

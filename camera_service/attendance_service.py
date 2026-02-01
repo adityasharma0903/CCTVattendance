@@ -32,7 +32,7 @@ MODEL = "ArcFace"
 DETECTION_INTERVAL = 2.0
 ATTENDANCE_COOLDOWN = 30  # Seconds cooldown between camera detections (database check handles duplicates)
 TEST_MODE_ALWAYS_ACTIVE = False  # False = only mark during scheduled time, True = always mark
-PROCESS_EVERY_N_FRAMES = 15  # Reduce heavy DeepFace calls
+PROCESS_EVERY_N_FRAMES = 45  # Reduce heavy DeepFace calls (process ~2-3 times per second)
 MODE_CHECK_INTERVAL = 5  # seconds
 EXAM_DETECT_INTERVAL = 1  # seconds
 PHONE_CONSEC_FRAMES = 1  # Instant detection (was 5, now just 1 frame needed)
@@ -106,6 +106,9 @@ class CameraAttendance:
         self.last_alert_time = None
         self.yolo_model = None
         self.last_exam_check = None
+        self.last_detected_faces = []  # Cache for detected faces
+        self.face_cache_time = None  # Timestamp of last face detection
+        self.FACE_CACHE_DURATION = 3.0  # Keep displaying face for 3 seconds (for smooth display)
 
     def get_camera_mode(self):
         """Fetch camera mode from backend with caching"""
@@ -371,13 +374,18 @@ class CameraAttendance:
                 logger.warning("No student embeddings in database")
                 return []
             
-            # Get frame embedding
+            # Get frame embedding and facial area
             try:
                 result = DeepFace.represent(frame, model_name=MODEL, enforce_detection=True)
                 if not result:
                     return []
                 
                 frame_embedding = np.array(result[0]["embedding"])
+                facial_area = result[0].get("facial_area", {})
+                face_x = facial_area.get("x", 0)
+                face_y = facial_area.get("y", 0)
+                face_w = facial_area.get("w", 0)
+                face_h = facial_area.get("h", 0)
             except Exception as e:
                 logger.debug(f"No face detected in frame: {e}")
                 return []
@@ -396,7 +404,11 @@ class CameraAttendance:
                     recognized_students.append({
                         "roll_number": roll_number,
                         "name": student.get("name"),
-                        "similarity": float(similarity)
+                        "similarity": float(similarity),
+                        "face_x": face_x,
+                        "face_y": face_y,
+                        "face_w": face_w,
+                        "face_h": face_h
                     })
             
             return recognized_students
@@ -404,6 +416,52 @@ class CameraAttendance:
         except Exception as e:
             logger.error(f"Error detecting faces: {e}")
             return []
+    
+    def draw_faces_on_frame(self, frame, recognized_students):
+        """Draw green rectangle and name for each recognized face"""
+        if not recognized_students:
+            return frame
+        
+        logger.info(f"🎨 Drawing {len(recognized_students)} face(s) on frame")
+        
+        for student in recognized_students:
+            # Get face coordinates
+            x = int(student.get("face_x", 0))
+            y = int(student.get("face_y", 0))
+            w = int(student.get("face_w", 100))
+            h = int(student.get("face_h", 100))
+            
+            logger.debug(f"   Drawing box at x={x}, y={y}, w={w}, h={h}")
+            
+            # Draw thin green rectangle around face
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
+            
+            # Prepare name text
+            name = student.get("name", "Unknown")
+            similarity = student.get("similarity", 0)
+            text = f"{name} ({similarity:.2f})"
+            
+            # Draw background for text
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.7
+            thickness = 2
+            text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+            text_x = x
+            text_y = y - 10 if y > 30 else y + h + 25
+            
+            # Draw green background rectangle for text
+            cv2.rectangle(frame, 
+                         (text_x, text_y - text_size[1] - 8),
+                         (text_x + text_size[0] + 8, text_y + 5),
+                         (0, 255, 0), -1)
+            
+            # Draw text on frame (black text on green background)
+            cv2.putText(frame, text, (text_x + 4, text_y - 2),
+                       font, font_scale, (0, 0, 0), thickness)
+            
+            logger.info(f"   Drew: {name} at box")
+        
+        return frame
     
     def mark_attendance(self, roll_number, confidence_score, current_schedule):
         """Mark attendance for a student"""
@@ -515,6 +573,10 @@ class CameraAttendance:
         recognized = self.detect_faces_in_frame(frame)
         
         if recognized:
+            # Update cache with new detections
+            self.last_detected_faces = recognized
+            self.face_cache_time = datetime.now()
+            
             logger.info(f"🔎 Detected {len(recognized)} face(s) in frame")
             for student in recognized:
                 logger.info(f"   -> {student['name']} (similarity: {student['similarity']:.2f})")
@@ -525,8 +587,19 @@ class CameraAttendance:
                 )
                 if marked:
                     # Add visual indicator on frame
-                    return {"status": "marked", "student": student}
+                    return {"status": "marked", "student": student, "recognized": recognized, "mode": mode}
             return {"status": "recognized", "recognized": recognized, "mode": mode}
+        
+        # Check if we have cached faces still valid
+        if self.last_detected_faces and self.face_cache_time:
+            cache_age = (datetime.now() - self.face_cache_time).total_seconds()
+            if cache_age < self.FACE_CACHE_DURATION:
+                # Return cached faces
+                return {"status": "recognized", "recognized": self.last_detected_faces, "mode": mode}
+            else:
+                # Cache expired
+                self.last_detected_faces = []
+                self.face_cache_time = None
 
         return {"status": "no_face", "mode": mode}
     
@@ -591,13 +664,21 @@ class CameraAttendance:
                 consecutive_failures = 0
                 frame_count += 1
                 
-                # Flip frame for mirror effect
-                frame = cv2.flip(frame, 1)
-                
                 detection_result = None
-                # Process every Nth frame to reduce processing load
+                # Process every Nth frame to reduce processing load (BEFORE flip)
                 if frame_count % PROCESS_EVERY_N_FRAMES == 0:
                     detection_result = self.process_frame(frame)
+                
+                # Flip frame for mirror effect (AFTER detection)
+                frame = cv2.flip(frame, 1)
+                
+                # If we have detection result with faces, adjust coordinates for flipped frame
+                if detection_result and detection_result.get("status") in ["marked", "recognized"]:
+                    frame_width = frame.shape[1]
+                    recognized = detection_result.get("recognized", [])
+                    for student in recognized:
+                        # Flip x coordinate
+                        student["face_x"] = frame_width - student["face_x"] - student["face_w"]
                 
                 # Display frame with info
                 cv2.putText(frame, f"Camera: {self.camera_name}", (10, 30),
@@ -612,6 +693,12 @@ class CameraAttendance:
                 # Show detection results
                 if detection_result:
                     status = detection_result.get("status")
+                    
+                    # Draw faces on frame for recognized/marked status
+                    if status in ["marked", "recognized"]:
+                        recognized = detection_result.get("recognized", [])
+                        frame = self.draw_faces_on_frame(frame, recognized)
+                    
                     if status == "marked":
                         student = detection_result.get("student", {})
                         name = student.get("name", "Unknown")
@@ -631,6 +718,15 @@ class CameraAttendance:
                     elif status == "exam_alert":
                         cv2.putText(frame, "🚨 EXAM ALERT SENT", (10, 140),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                else:
+                    # No detection this frame, but check if we have cached faces to display
+                    if self.last_detected_faces and self.face_cache_time:
+                        cache_age = (datetime.now() - self.face_cache_time).total_seconds()
+                        if cache_age < self.FACE_CACHE_DURATION:
+                            # Draw cached faces
+                            frame = self.draw_faces_on_frame(frame, self.last_detected_faces)
+                            cv2.putText(frame, f"🔎 Detected {len(self.last_detected_faces)} face(s) [cached]", (10, 140),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                 
                 # Show message to quit
                 cv2.putText(frame, "Press 'q' to quit", (10, frame.shape[0] - 20),

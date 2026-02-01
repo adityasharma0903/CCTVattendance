@@ -21,6 +21,17 @@
       "batch_id": "B001",
       "status": "PRESENT",
       "confidence_score": 0.5231295941418046
+    },
+    {
+      "attendance_id": "9acd24f3-f82a-4672-ab5b-18f15a23f18d",
+      "student_id": "STU_2410990250",
+      "roll_number": "2410990250",
+      "camera_id": "CAM_001",
+      "timestamp": "2026-02-01T16:39:12.745658",
+      "subject_id": "S002",
+      "batch_id": "B001",
+      "status": "LATE",
+      "confidence_score": 0.5051786113655989
     }
   ]
 }

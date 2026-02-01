@@ -123,11 +123,35 @@
       "day": "Sunday",
       "period": "9",
       "start_time": "15:26",
-      "end_time": "15:40",
+      "end_time": "15:38",
       "subject_id": "S002",
       "teacher_id": "T098765",
       "room": "TG 202 (Turing Block)",
       "is_exam": true
+    },
+    {
+      "timetable_id": "TT098765432",
+      "batch_id": "B002",
+      "day": "Sunday",
+      "period": "2",
+      "start_time": "15:43",
+      "end_time": "15:58",
+      "subject_id": "S002",
+      "teacher_id": "T002",
+      "room": "Turing Block TG 302",
+      "is_exam": false
+    },
+    {
+      "timetable_id": "q7y89u9i0skxm c",
+      "batch_id": "B001",
+      "day": "Sunday",
+      "period": "8",
+      "start_time": "16:34",
+      "end_time": "16:40",
+      "subject_id": "S002",
+      "teacher_id": "T001",
+      "room": "TG508",
+      "is_exam": false
     }
   ]
 }
