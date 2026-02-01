@@ -47,6 +47,60 @@
       "camera_id": "CAM_001",
       "timetable_id": "zsdxfcgvhbjn",
       "is_active": true
+    },
+    {
+      "schedule_id": "CS_1769842283795",
+      "camera_id": "CAM_001",
+      "timetable_id": "THE",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1769842820404",
+      "camera_id": "CAM_001",
+      "timetable_id": "TTTTTTTT",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1769843153938",
+      "camera_id": "CAM_001",
+      "timetable_id": "TT126721537612",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1769843506690",
+      "camera_id": "CAM_001",
+      "timetable_id": "TTT0908",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1769926354965",
+      "camera_id": "CAM_001",
+      "timetable_id": "TT0000001111",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1769927022667",
+      "camera_id": "CAM_001",
+      "timetable_id": "dxgfchgvhbjnkjkl",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1769937559867",
+      "camera_id": "CAM_001",
+      "timetable_id": "TTEXAM",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1769939470647",
+      "camera_id": "CAM_001",
+      "timetable_id": "TTTTTT",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1769939784008",
+      "camera_id": "CAM_001",
+      "timetable_id": "ytfdyghfvo",
+      "is_active": true
     }
   ]
 }

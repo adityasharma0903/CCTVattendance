@@ -15,11 +15,12 @@ function TimetableManager({ apiBase }) {
     end_time: '',
     subject_id: '',
     teacher_id: '',
+    room: '',
     is_exam: false
   });
   const [showForm, setShowForm] = useState(false);
 
-  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
   useEffect(() => {
     fetchTimetables();
@@ -115,6 +116,7 @@ function TimetableManager({ apiBase }) {
           end_time: '',
           subject_id: '',
           teacher_id: '',
+          room: '',
           is_exam: false
         });
         setShowForm(false);
@@ -206,6 +208,13 @@ function TimetableManager({ apiBase }) {
               </option>
             ))}
           </select>
+          <input
+            type="text"
+            placeholder="Room/Location (e.g., Classroom A, Exam Room 1)"
+            value={formData.room}
+            onChange={(e) => setFormData({...formData, room: e.target.value})}
+            required
+          />
           <label>
             <input
               type="checkbox"
@@ -227,6 +236,7 @@ function TimetableManager({ apiBase }) {
             <th>Time</th>
             <th>Subject</th>
             <th>Teacher</th>
+            <th>Room</th>
             <th>Type</th>
           </tr>
         </thead>
@@ -242,6 +252,7 @@ function TimetableManager({ apiBase }) {
                 <td>{tt.start_time} - {tt.end_time}</td>
                 <td>{subject?.subject_name || 'N/A'}</td>
                 <td>{teacher?.name || 'N/A'}</td>
+                <td>{tt.room || 'N/A'}</td>
                 <td>{tt.is_exam ? 'EXAM' : 'CLASS'}</td>
               </tr>
             );

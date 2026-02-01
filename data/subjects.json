@@ -17,6 +17,12 @@
       "subject_name": "Web Development",
       "subject_code": "CS203",
       "teacher_id": "T001"
+    },
+    {
+      "subject_id": "S0005",
+      "subject_name": "Operating System",
+      "subject_code": "CSE0489204",
+      "teacher_id": "T098765"
     }
   ]
 }

@@ -6,6 +6,12 @@ from typing import List, Dict, Optional
 import json
 import os
 from datetime import datetime
+import logging
+
+# ============================================================================
+# LOGGING SETUP
+# ============================================================================
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # FASTAPI APP SETUP
@@ -48,6 +54,21 @@ class Teacher(BaseModel):
     name: str
     email: str
     phone: str
+
+class ExamViolation(BaseModel):
+    violation_id: str
+    timestamp: str
+    student_id: str
+    student_name: str
+    teacher_id: str
+    subject_id: str
+    camera_id: str
+    camera_name: Optional[str] = None
+    camera_location: Optional[str] = None
+    confidence: float
+    duration_seconds: Optional[int] = None
+    notes: Optional[str] = None
+    severity: Optional[str] = "high"
 
 class Subject(BaseModel):
     subject_id: str
@@ -330,6 +351,25 @@ async def add_camera(camera: Dict):
     else:
         raise HTTPException(status_code=500, detail="Failed to add camera")
 
+@app.put("/api/cameras/{camera_id}")
+async def update_camera(camera_id: str, payload: Dict):
+    """Update camera details (e.g., location/room)"""
+    cameras_data = load_json_file("cameras.json")
+    updated = False
+    for cam in cameras_data.get("cameras", []):
+        if cam.get("camera_id") == camera_id:
+            cam.update(payload)
+            updated = True
+            break
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    if save_json_file("cameras.json", cameras_data):
+        return {"status": "success", "message": "Camera updated successfully"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to update camera")
+
 # ============================================================================
 # CAMERA MODE ENDPOINTS
 # ============================================================================
@@ -400,6 +440,7 @@ async def add_timetable(entry: Dict):
         "end_time": entry.get("end_time"),
         "subject_id": entry.get("subject_id"),
         "teacher_id": entry.get("teacher_id"),
+        "room": entry.get("room", "Unknown Room"),
         "is_exam": entry.get("is_exam", False)
     }
     
@@ -552,6 +593,69 @@ async def get_attendance_report(batch_id: str):
         "absent": absent_count,
         "late": late_count,
         "attendance_percentage": (present_count / total_records * 100) if total_records > 0 else 0
+    }
+
+# ============================================================================
+# EXAM VIOLATIONS (PHONE DETECTION)
+# ============================================================================
+
+def load_exam_violations():
+    """Load exam violations from file"""
+    filepath = os.path.join(DATA_DIR, "exam_violations.json")
+    if not os.path.exists(filepath):
+        return []
+    try:
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+            return data.get("violations", [])
+    except Exception as e:
+        logger.error(f"Error loading exam violations: {e}")
+        return []
+
+def save_exam_violations(violations):
+    """Save exam violations to file"""
+    filepath = os.path.join(DATA_DIR, "exam_violations.json")
+    try:
+        with open(filepath, 'w') as f:
+            json.dump({"violations": violations}, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving exam violations: {e}")
+
+@app.get("/api/exam-violations")
+async def get_exam_violations():
+    """Get all exam violations (phone detections)"""
+    violations = load_exam_violations()
+    return violations
+
+@app.post("/api/exam-violations")
+async def add_exam_violation(violation: ExamViolation):
+    """Add new exam violation (phone detection)"""
+    violations = load_exam_violations()
+    violation_dict = violation.dict()
+    violations.append(violation_dict)
+    save_exam_violations(violations)
+    return {
+        "status": "success",
+        "violation_id": violation.violation_id,
+        "message": "Phone detection violation recorded"
+    }
+
+@app.get("/api/exam-violations/{student_id}")
+async def get_student_violations(student_id: str):
+    """Get all violations for a specific student"""
+    violations = load_exam_violations()
+    student_violations = [v for v in violations if v.get("student_id") == student_id]
+    return student_violations
+
+@app.delete("/api/exam-violations/{violation_id}")
+async def delete_violation(violation_id: str):
+    """Delete an exam violation record"""
+    violations = load_exam_violations()
+    filtered_violations = [v for v in violations if v.get("violation_id") != violation_id]
+    save_exam_violations(filtered_violations)
+    return {
+        "status": "success",
+        "message": f"Violation {violation_id} deleted"
     }
 
 # ============================================================================

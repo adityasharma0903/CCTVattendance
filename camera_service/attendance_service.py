@@ -35,8 +35,11 @@ TEST_MODE_ALWAYS_ACTIVE = False  # False = only mark during scheduled time, True
 PROCESS_EVERY_N_FRAMES = 15  # Reduce heavy DeepFace calls
 MODE_CHECK_INTERVAL = 5  # seconds
 EXAM_DETECT_INTERVAL = 1  # seconds
-PHONE_CONSEC_FRAMES = 5
+PHONE_CONSEC_FRAMES = 1  # Instant detection (was 5, now just 1 frame needed)
 EXAM_ALERT_COOLDOWN = 60  # seconds
+PHONE_CONFIDENCE_THRESHOLD = 0.2  # Lower threshold to detect even partial phones (was 0.3)
+FACE_SURE_THRESHOLD = 0.8
+FACE_MAYBE_THRESHOLD = 0.5
 
 # ============================================================================
 # UTILITIES
@@ -159,23 +162,27 @@ class CameraAttendance:
             logger.error(f"Failed to send exam alert email: {e}")
 
     def detect_phone_in_frame(self, frame):
-        """Detect mobile phone using YOLO (ultralytics)"""
+        """Detect mobile phone using YOLO (ultralytics) - even partial phone visibility"""
         try:
             if self.yolo_model is None:
                 from ultralytics import YOLO
                 self.yolo_model = YOLO("yolov8n.pt")
 
-            results = self.yolo_model(frame, verbose=False)
+            results = self.yolo_model(frame, verbose=False, conf=PHONE_CONFIDENCE_THRESHOLD, imgsz=1280)
+            best_confidence = 0.0
             for result in results:
                 for box in result.boxes:
                     cls_id = int(box.cls[0])
                     cls_name = result.names.get(cls_id, "")
-                    if cls_name == "cell phone":
-                        return True
-            return False
+                    confidence = float(box.conf[0])
+                    if cls_name == "cell phone" and confidence >= PHONE_CONFIDENCE_THRESHOLD:
+                        best_confidence = max(best_confidence, confidence)
+                        logger.debug(f"📱 Phone detected with confidence: {confidence:.2%}")
+                        return True, best_confidence
+            return False, best_confidence
         except Exception as e:
             logger.error(f"Phone detection error: {e}")
-            return False
+            return False, 0.0
 
     def handle_exam_frame(self, frame, schedule):
         """Handle exam mode logic"""
@@ -184,7 +191,7 @@ class CameraAttendance:
             return {"status": "exam_monitoring"}
         self.last_exam_check = now
 
-        detected = self.detect_phone_in_frame(frame)
+        detected, phone_confidence = self.detect_phone_in_frame(frame)
         if detected:
             self.phone_detect_count += 1
             logger.info("📱 Phone detected in exam mode")
@@ -197,12 +204,99 @@ class CameraAttendance:
                 time_slot = f"{schedule.get('start_time').strftime('%H:%M')}-{schedule.get('end_time').strftime('%H:%M')}"
                 logger.warning(f"🚨 Exam alert: Mobile phone detected | Subject {schedule.get('subject_id')} | {time_slot}")
                 self.send_exam_alert(schedule.get("subject_id"), time_slot)
+                self.save_violation_to_backend(schedule, frame, phone_confidence)
                 self.last_alert_time = now
             return {"status": "exam_alert"}
 
         if detected:
             return {"status": "phone_detected"}
         return {"status": "exam_monitoring"}
+    
+    def get_best_face_match(self, frame):
+        """Get best face match from frame with similarity score"""
+        try:
+            embeddings_db = self.face_db.get_all_embeddings()
+            if not embeddings_db:
+                return None
+
+            result = DeepFace.represent(frame, model_name=MODEL, enforce_detection=True)
+            if not result:
+                return None
+
+            frame_embedding = np.array(result[0]["embedding"])
+
+            best_match = None
+            best_similarity = -1.0
+
+            for roll_number, student_embedding in embeddings_db.items():
+                similarity = np.dot(frame_embedding, student_embedding) / (
+                    np.linalg.norm(frame_embedding) * np.linalg.norm(student_embedding)
+                )
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    student = self.face_db.get_student_by_roll(roll_number)
+                    best_match = {
+                        "roll_number": roll_number,
+                        "name": student.get("name"),
+                        "similarity": float(similarity)
+                    }
+
+            return best_match
+        except Exception as e:
+            logger.debug(f"Face match failed: {e}")
+            return None
+
+    def save_violation_to_backend(self, schedule, frame, phone_confidence):
+        """Save exam violation (phone detection) to backend"""
+        try:
+            import uuid
+            violation_id = str(uuid.uuid4())
+            face_match = self.get_best_face_match(frame)
+
+            if face_match and face_match.get("similarity", 0) >= FACE_SURE_THRESHOLD:
+                student_id = face_match.get("roll_number")
+                student_name = face_match.get("name")
+                face_note = f"Face match {face_match.get('similarity', 0):.2f} (sure)"
+            elif face_match and face_match.get("similarity", 0) >= FACE_MAYBE_THRESHOLD:
+                student_id = face_match.get("roll_number")
+                student_name = f"Maybe: {face_match.get('name')}"
+                face_note = f"Face match {face_match.get('similarity', 0):.2f} (maybe)"
+            else:
+                student_id = "Unknown"
+                student_name = "Unknown Student"
+                face_note = "Face match below 0.50 (unknown)"
+
+            # Get room from timetable schedule
+            room = schedule.get("room", "Unknown Room")
+
+            violation_data = {
+                "violation_id": violation_id,
+                "timestamp": datetime.now().isoformat(),
+                "student_id": student_id,
+                "student_name": student_name,
+                "teacher_id": schedule.get("teacher_id", "Unknown"),
+                "subject_id": schedule.get("subject_id"),
+                "camera_id": self.camera_id,
+                "camera_name": self.camera_name,
+                "camera_location": room,
+                "confidence": float(phone_confidence) if phone_confidence else 0.0,
+                "duration_seconds": 1,
+                "notes": f"Phone detected in exam mode at {self.camera_name} (Room: {room}) | {face_note}",
+                "severity": "high"
+            }
+            
+            response = requests.post(
+                f"{BACKEND_API}/exam-violations",
+                json=violation_data,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"✅ Violation saved to backend: {violation_id}")
+            else:
+                logger.warning(f"⚠️ Failed to save violation to backend: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Error saving violation to backend: {e}")
     
     def get_current_schedule(self, require_exam=False):
         """Get current class schedule for this camera"""
@@ -233,6 +327,7 @@ class CameraAttendance:
                                 active_schedule = {
                                     "subject_id": tt.get("subject_id"),
                                     "teacher_id": tt.get("teacher_id"),
+                                    "room": tt.get("room", "Unknown Room"),
                                     "start_time": start_time,
                                     "end_time": end_time
                                 }
@@ -253,6 +348,7 @@ class CameraAttendance:
                                 return {
                                     "subject_id": tt.get("subject_id"),
                                     "teacher_id": tt.get("teacher_id"),
+                                    "room": tt.get("room", "Unknown Room"),
                                     "start_time": datetime.strptime("00:00", "%H:%M").time(),
                                     "end_time": datetime.strptime("23:59", "%H:%M").time()
                                 }

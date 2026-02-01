@@ -47,6 +47,7 @@ function CameraManager({ apiBase }) {
 
   const updateCameraMode = async (cameraId, mode) => {
     try {
+      // Room is now fetched from timetable, no manual prompt needed
       const response = await fetch(`${apiBase}/camera-mode`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -54,6 +55,7 @@ function CameraManager({ apiBase }) {
       });
       if (response.ok) {
         setCameraModes(prev => ({ ...prev, [cameraId]: mode }));
+        alert(`✅ Camera set to ${mode} Mode\n\n📍 Room details will be fetched from timetable`);
       }
     } catch (error) {
       console.error('Error updating camera mode:', error);

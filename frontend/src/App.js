@@ -8,6 +8,7 @@ import SubjectManager from './components/SubjectManager';
 import CameraManager from './components/CameraManager';
 import TimetableManager from './components/TimetableManager';
 import AttendanceReport from './components/AttendanceReport';
+import ExamViolationReport from './components/ExamViolationReport';
 
 function App() {
   const [currentPage, setCurrentPage] = useState('dashboard');
@@ -31,6 +32,8 @@ function App() {
         return <TimetableManager apiBase={apiBase} />;
       case 'attendance':
         return <AttendanceReport apiBase={apiBase} />;
+      case 'exam-violations':
+        return <ExamViolationReport apiBase={apiBase} />;
       default:
         return <Dashboard apiBase={apiBase} />;
     }
@@ -101,6 +104,13 @@ function App() {
             onClick={() => setCurrentPage('attendance')}
           >
             📋 Attendance Report
+          </button>
+          
+          <button 
+            className={`nav-btn ${currentPage === 'exam-violations' ? 'active' : ''}`}
+            onClick={() => setCurrentPage('exam-violations')}
+          >
+            📱 Exam Violations
           </button>
         </aside>
 

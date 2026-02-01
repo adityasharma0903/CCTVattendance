@@ -11,6 +11,12 @@
       "batch_name": "CSE Batch B",
       "semester": "4",
       "total_students": 0
+    },
+    {
+      "batch_id": "B003",
+      "batch_name": "B.E.CSE G4",
+      "semester": "4",
+      "total_students": 0
     }
   ]
 }

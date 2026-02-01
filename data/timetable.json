@@ -8,7 +8,8 @@
       "start_time": "09:00",
       "end_time": "10:30",
       "subject_id": "S001",
-      "teacher_id": "T001"
+      "teacher_id": "T001",
+      "room": "Classroom A"
     },
     {
       "timetable_id": "TT002",
@@ -18,7 +19,8 @@
       "start_time": "23:19",
       "end_time": "23:30",
       "subject_id": "S002",
-      "teacher_id": "T001"
+      "teacher_id": "T001",
+      "room": "Classroom B"
     },
     {
       "timetable_id": "TT03",
@@ -28,7 +30,8 @@
       "start_time": "09:33",
       "end_time": "09:40",
       "subject_id": "S001",
-      "teacher_id": "T001"
+      "teacher_id": "T001",
+      "room": "Exam Room 1"
     },
     {
       "timetable_id": "TTTTT000000111",
@@ -39,7 +42,8 @@
       "end_time": "10:52",
       "subject_id": "S002",
       "teacher_id": "T002",
-      "is_exam": false
+      "is_exam": false,
+      "room": "Exam Room 2"
     },
     {
       "timetable_id": "zsdxfcgvhbjn",
@@ -50,6 +54,79 @@
       "end_time": "10:57",
       "subject_id": "S002",
       "teacher_id": "T001",
+      "is_exam": true,
+      "room": "Exam Room 1"
+    },
+    {
+      "timetable_id": "TTT0908",
+      "batch_id": "B001",
+      "day": "Saturday",
+      "period": "8",
+      "start_time": "12:42",
+      "end_time": "13:00",
+      "subject_id": "S003",
+      "teacher_id": "T001",
+      "is_exam": true,
+      "room": "Exam Room 3"
+    },
+    {
+      "timetable_id": "TT0000001111",
+      "batch_id": "B003",
+      "day": "Sunday",
+      "period": "1",
+      "start_time": "11:43",
+      "end_time": "11:50",
+      "subject_id": "S0005",
+      "teacher_id": "T098765",
+      "is_exam": true,
+      "room": "Exam Hall A"
+    },
+    {
+      "timetable_id": "dxgfchgvhbjnkjkl",
+      "batch_id": "B001",
+      "day": "Sunday",
+      "period": "5",
+      "start_time": "11:53",
+      "end_time": "12:01",
+      "subject_id": "S003",
+      "teacher_id": "T001",
+      "is_exam": true,
+      "room": "Exam Hall B"
+    },
+    {
+      "timetable_id": "TTEXAM",
+      "batch_id": "B002",
+      "day": "Sunday",
+      "period": "8",
+      "start_time": "14:49",
+      "end_time": "14:58",
+      "subject_id": "S002",
+      "teacher_id": "T002",
+      "is_exam": true,
+      "room": "Exam Hall C"
+    },
+    {
+      "timetable_id": "TTTTTT",
+      "batch_id": "B003",
+      "day": "Sunday",
+      "period": "5",
+      "start_time": "15:20",
+      "end_time": "15:25",
+      "subject_id": "S001",
+      "teacher_id": "T098765",
+      "is_exam": true,
+      "room": "TG 202 (Turing Block)"
+    },
+    {
+      "timetable_id": "ytfdyghfvo",
+      "batch_id": "B002",
+      "day": "Sunday",
+      "period": "9",
+      "start_time": "15:26",
+      "end_time": "15:40",
+      "subject_id": "S002",
+      "teacher_id": "T098765",
+      "room": "TG 202 (Turing Block)",
       "is_exam": true
     }
   ]
