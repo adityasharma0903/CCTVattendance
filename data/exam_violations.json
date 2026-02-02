@@ -70,6 +70,66 @@
       "duration_seconds": 1,
       "notes": "Phone detected in exam mode at Laptop Camera (Room: TG 202 (Turing Block)) | Face match 0.57 (maybe)",
       "severity": "high"
+    },
+    {
+      "violation_id": "dc61f7b9-6f61-41ea-972c-a2a34cf3d45d",
+      "timestamp": "2026-02-02T10:26:07.986423",
+      "student_id": "Unknown",
+      "student_name": "Unknown Student",
+      "teacher_id": "T001",
+      "subject_id": "S002",
+      "camera_id": "CAM_001",
+      "camera_name": "Laptop Camera",
+      "camera_location": "turingggggggg",
+      "confidence": 0.018407704308629036,
+      "duration_seconds": 1,
+      "notes": "Phone detected in exam mode at Laptop Camera (Room: turingggggggg) | Face match below 0.50 (unknown)",
+      "severity": "high"
+    },
+    {
+      "violation_id": "9dd95b8a-8f62-46d9-92f9-2ecd2de0a9c2",
+      "timestamp": "2026-02-02T10:29:09.851758",
+      "student_id": "Unknown",
+      "student_name": "Unknown Student",
+      "teacher_id": "T001",
+      "subject_id": "S002",
+      "camera_id": "CAM_001",
+      "camera_name": "Laptop Camera",
+      "camera_location": "turingggggggg",
+      "confidence": 0.6668723225593567,
+      "duration_seconds": 1,
+      "notes": "Phone detected in exam mode at Laptop Camera (Room: turingggggggg) | Face match below 0.50 (unknown)",
+      "severity": "high"
+    },
+    {
+      "violation_id": "16a31e9d-924b-404c-978b-78546b34669d",
+      "timestamp": "2026-02-02T10:30:45.138792",
+      "student_id": "Unknown",
+      "student_name": "Unknown Student",
+      "teacher_id": "T001",
+      "subject_id": "S002",
+      "camera_id": "CAM_001",
+      "camera_name": "Laptop Camera",
+      "camera_location": "turingggggggg",
+      "confidence": 0.694577693939209,
+      "duration_seconds": 1,
+      "notes": "Phone detected in exam mode at Laptop Camera (Room: turingggggggg) | Face match below 0.50 (unknown)",
+      "severity": "high"
+    },
+    {
+      "violation_id": "9bcb440e-b41e-4f1b-add5-e4cc72b1a864",
+      "timestamp": "2026-02-02T10:31:47.679969",
+      "student_id": "Unknown",
+      "student_name": "Unknown Student",
+      "teacher_id": "T001",
+      "subject_id": "S002",
+      "camera_id": "CAM_001",
+      "camera_name": "Laptop Camera",
+      "camera_location": "turingggggggg",
+      "confidence": 0.6404467225074768,
+      "duration_seconds": 1,
+      "notes": "Phone detected in exam mode at Laptop Camera (Room: turingggggggg) | Face match below 0.50 (unknown)",
+      "severity": "high"
     }
   ]
 }

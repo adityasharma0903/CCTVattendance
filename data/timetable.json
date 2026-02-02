@@ -152,6 +152,30 @@
       "teacher_id": "T001",
       "room": "TG508",
       "is_exam": false
+    },
+    {
+      "timetable_id": "TTDSOOPS",
+      "batch_id": "B003",
+      "day": "Monday",
+      "period": "-1",
+      "start_time": "09:47",
+      "end_time": "10:00",
+      "subject_id": "S001",
+      "teacher_id": "T098765",
+      "room": "TG 202 (Turing Block)",
+      "is_exam": false
+    },
+    {
+      "timetable_id": "TT345678",
+      "batch_id": "B001",
+      "day": "Monday",
+      "period": "3",
+      "start_time": "10:19",
+      "end_time": "10:35",
+      "subject_id": "S002",
+      "teacher_id": "T001",
+      "room": "turingggggggg",
+      "is_exam": true
     }
   ]
 }

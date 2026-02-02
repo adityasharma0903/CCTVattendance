@@ -113,6 +113,30 @@
       "camera_id": "CAM_001",
       "timetable_id": "q7y89u9i0skxm c",
       "is_active": true
+    },
+    {
+      "schedule_id": "CS_1770005880855",
+      "camera_id": "CAM_001",
+      "timetable_id": "TTDSOOPS",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1770006924596",
+      "camera_id": "CAM_001",
+      "timetable_id": "TTEXAMDSOOPS",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1770007165840",
+      "camera_id": "CAM_001",
+      "timetable_id": "TTDSOOPSEXAM",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1770007797397",
+      "camera_id": "CAM_001",
+      "timetable_id": "TT345678",
+      "is_active": true
     }
   ]
 }

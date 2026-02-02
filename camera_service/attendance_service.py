@@ -32,12 +32,12 @@ MODEL = "ArcFace"
 DETECTION_INTERVAL = 2.0
 ATTENDANCE_COOLDOWN = 30  # Seconds cooldown between camera detections (database check handles duplicates)
 TEST_MODE_ALWAYS_ACTIVE = False  # False = only mark during scheduled time, True = always mark
-PROCESS_EVERY_N_FRAMES = 45  # Reduce heavy DeepFace calls (process ~2-3 times per second)
-MODE_CHECK_INTERVAL = 5  # seconds
+PROCESS_EVERY_N_FRAMES = 15  # Process every 15 frames for faster mode detection (~2 times per second at 30fps)
+MODE_CHECK_INTERVAL = 0.5  # seconds (increased frequency for instant mode detection)
 EXAM_DETECT_INTERVAL = 1  # seconds
 PHONE_CONSEC_FRAMES = 1  # Instant detection (was 5, now just 1 frame needed)
 EXAM_ALERT_COOLDOWN = 60  # seconds
-PHONE_CONFIDENCE_THRESHOLD = 0.2  # Lower threshold to detect even partial phones (was 0.3)
+PHONE_CONFIDENCE_THRESHOLD = 0.5  # HIGH threshold - only real phones (was 0.2)
 FACE_SURE_THRESHOLD = 0.8
 FACE_MAYBE_THRESHOLD = 0.5
 
@@ -165,27 +165,41 @@ class CameraAttendance:
             logger.error(f"Failed to send exam alert email: {e}")
 
     def detect_phone_in_frame(self, frame):
-        """Detect mobile phone using YOLO (ultralytics) - even partial phone visibility"""
+        """Detect mobile phone using YOLO - ONLY HIGH CONFIDENCE REAL PHONES"""
         try:
             if self.yolo_model is None:
                 from ultralytics import YOLO
+                logger.info("📦 Loading YOLO model for phone detection...")
                 self.yolo_model = YOLO("yolov8n.pt")
+                logger.info("✅ YOLO model loaded successfully")
 
-            results = self.yolo_model(frame, verbose=False, conf=PHONE_CONFIDENCE_THRESHOLD, imgsz=1280)
             best_confidence = 0.0
+            
+            # ONLY detect on original frame with HIGH confidence threshold
+            # Try with standard size first for better accuracy
+            results = self.yolo_model(frame, verbose=False, conf=PHONE_CONFIDENCE_THRESHOLD, imgsz=640)
+            
             for result in results:
                 for box in result.boxes:
                     cls_id = int(box.cls[0])
                     cls_name = result.names.get(cls_id, "")
                     confidence = float(box.conf[0])
+                    
+                    # ONLY accept "cell phone" class with HIGH confidence
                     if cls_name == "cell phone" and confidence >= PHONE_CONFIDENCE_THRESHOLD:
                         best_confidence = max(best_confidence, confidence)
-                        logger.debug(f"📱 Phone detected with confidence: {confidence:.2%}")
+                        logger.warning(f"🚨 REAL PHONE DETECTED: confidence={confidence:.1%}")
                         return True, best_confidence
+            
+            logger.debug(f"📵 No phone detected (threshold={PHONE_CONFIDENCE_THRESHOLD:.0%})")
             return False, best_confidence
+            
         except Exception as e:
-            logger.error(f"Phone detection error: {e}")
+            logger.error(f"❌ Phone detection error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False, 0.0
+    
 
     def handle_exam_frame(self, frame, schedule):
         """Handle exam mode logic"""
@@ -195,9 +209,11 @@ class CameraAttendance:
         self.last_exam_check = now
 
         detected, phone_confidence = self.detect_phone_in_frame(frame)
+        logger.debug(f"🔍 Phone detection: detected={detected}, confidence={phone_confidence:.2%}, count={self.phone_detect_count}")
+        
         if detected:
             self.phone_detect_count += 1
-            logger.info("📱 Phone detected in exam mode")
+            logger.info(f"📱 Phone detected in exam mode (confidence: {phone_confidence:.2%})")
         else:
             self.phone_detect_count = 0
 
@@ -687,8 +703,13 @@ class CameraAttendance:
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 if detection_result:
                     mode_text = detection_result.get("mode", "NORMAL")
-                    cv2.putText(frame, f"Mode: {mode_text}", (10, 100),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+                    # Highlight EXAM mode in red
+                    if mode_text == "EXAM":
+                        cv2.putText(frame, f"🚨 EXAM MODE ACTIVE", (10, 100),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)  # Red, bold
+                    else:
+                        cv2.putText(frame, f"Mode: {mode_text}", (10, 100),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
                 
                 # Show detection results
                 if detection_result:
