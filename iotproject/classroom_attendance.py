@@ -6,6 +6,7 @@ from datetime import datetime
 import time
 import threading
 import numpy as np
+from cloudinary_helper import get_image_from_student, download_image_from_url
 
 # ----------------------------------------------------------------------
 # CONFIGURATION
@@ -47,16 +48,30 @@ class StudentDatabase:
             json.dump(self.students, f, indent=2)
         print(f"✅ Database saved with {len(self.students)} students")
     
-    def add_student(self, roll_number, name, image_path):
-        """Add a new student to the database"""
+    def add_student(self, roll_number, name, image_path=None, image_url=None):
+        """
+        Add a new student to the database
+        Supports both local image path and Cloudinary URL
+        """
         try:
-            if not os.path.exists(image_path):
-                print(f"❌ Image not found: {image_path}")
+            # Get image from either URL or local path
+            img = None
+            
+            if image_url:
+                print(f"⏳ Downloading image from Cloudinary for {name}...")
+                img = download_image_from_url(image_url)
+            elif image_path:
+                if not os.path.exists(image_path):
+                    print(f"❌ Image not found: {image_path}")
+                    return False
+                print(f"⏳ Loading image from local path for {name}...")
+                img = cv2.imread(image_path)
+            else:
+                print(f"❌ No image source provided (neither URL nor path)")
                 return False
             
-            img = cv2.imread(image_path)
             if img is None:
-                print(f"❌ Could not read image: {image_path}")
+                print(f"❌ Could not load image for {name}")
                 return False
             
             print(f"⏳ Processing {name} (Roll: {roll_number})...")
@@ -65,7 +80,8 @@ class StudentDatabase:
             self.students[roll_number] = {
                 "name": name,
                 "roll_number": roll_number,
-                "image_path": image_path,
+                "image_url": image_url,  # Cloudinary URL (preferred)
+                "image_path": image_path,  # Local path (fallback)
                 "embedding": embedding,
                 "added_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }

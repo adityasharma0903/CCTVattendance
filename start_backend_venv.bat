@@ -5,6 +5,8 @@ echo ========================================
 echo.
 
 cd backend
-call venv\Scripts\activate.bat
-python main.py
+
+REM Use EXACT python from .venv (no activate needed)
+"..\.venv\Scripts\python.exe" main.py
+
 pause

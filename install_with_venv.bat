@@ -48,3 +48,4 @@ echo   - start_camera_service_venv.bat
 echo   - start_frontend.bat (unchanged)
 echo.
 pause
+

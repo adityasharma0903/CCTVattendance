@@ -71,9 +71,35 @@ class FaceDatabase:
         self.load_students()
     
     def load_students(self):
-        """Load student embeddings from database"""
+        """Load student embeddings from MongoDB via backend API"""
+        try:
+            # Try to fetch from MongoDB via API (NEW - preferred)
+            response = requests.get(f"{BACKEND_API}/students", timeout=5)
+            if response.status_code == 200:
+                students_list = response.json()
+                
+                # Convert list format to roll_number keyed format
+                for student in students_list:
+                    roll = student.get("roll_number")
+                    if roll:
+                        self.students[roll] = student
+                        
+                        # Extract embedding if present
+                        if "embedding" in student and student["embedding"]:
+                            try:
+                                self.embeddings[roll] = np.array(student["embedding"])
+                            except Exception as e:
+                                logger.warning(f"Could not process embedding for {roll}: {e}")
+                
+                logger.info(f"✅ Loaded {len(self.students)} students from MongoDB (via API)")
+                return
+        except Exception as e:
+            logger.warning(f"⚠️ Could not fetch from MongoDB API: {e}")
+        
+        # Fallback: Load from local JSON file if API fails
+        logger.info("📂 Falling back to local JSON file...")
         self.students = load_json_file(STUDENTS_DB_FILE)
-        logger.info(f"✅ Loaded {len(self.students)} students from database")
+        logger.info(f"✅ Loaded {len(self.students)} students from JSON file")
         
         for roll, student_data in self.students.items():
             if "embedding" in student_data:
@@ -318,70 +344,116 @@ class CameraAttendance:
             logger.error(f"Error saving violation to backend: {e}")
     
     def get_current_schedule(self, require_exam=False):
-        """Get current class schedule for this camera"""
-        current_day = datetime.now().strftime("%A")
-        current_time = datetime.now().time()
-        
-        # Load timetable and camera schedule
-        camera_schedule = load_from_data_dir("camera_schedule.json").get("camera_schedule", [])
-        timetable_data = load_from_data_dir("timetable.json").get("timetable", [])
-        
-        # Find active schedules for this camera
-        active_schedule = None
-        
-        for schedule in camera_schedule:
-            if schedule.get("camera_id") == self.camera_id and schedule.get("is_active"):
-                timetable_id = schedule.get("timetable_id")
+        """Get current class schedule for this camera from backend"""
+        try:
+            current_day = datetime.now().strftime("%A")
+            current_time = datetime.now().time()
+            
+            logger.debug(f"🔍 Fetching schedule for {self.camera_name} (ID: {self.camera_id}), Batch: {self.batch_id}")
+            
+            # Try to get active schedule from backend
+            try:
+                response = requests.get(
+                    f"{BACKEND_API}/timetable",
+                    timeout=5
+                )
                 
-                # Find corresponding timetable entry
-                for tt in timetable_data:
-                    if tt.get("timetable_id") == timetable_id:
-                        if require_exam and not tt.get("is_exam"):
-                            continue
-                        if tt.get("day") == current_day:
-                            start_time = datetime.strptime(tt.get("start_time"), "%H:%M").time()
-                            end_time = datetime.strptime(tt.get("end_time"), "%H:%M").time()
+                if response.status_code != 200:
+                    logger.warning(f"Could not fetch timetable from backend: {response.status_code}")
+                    return None
+                
+                timetable_data = response.json()
+                logger.debug(f"📚 Fetched {len(timetable_data)} timetable entries")
+            except requests.exceptions.RequestException as e:
+                logger.error(f"❌ Network error fetching timetable: {e}")
+                return None
+            
+            # Get camera schedules
+            try:
+                response = requests.get(
+                    f"{BACKEND_API}/camera-schedule/{self.camera_id}",
+                    timeout=5
+                )
+                
+                if response.status_code != 200:
+                    logger.warning(f"❌ Could not fetch camera schedules for {self.camera_id}: {response.status_code}")
+                    logger.warning(f"   Response: {response.text[:200]}")
+                    return None
+                
+                camera_schedule = response.json()
+                if isinstance(camera_schedule, dict):
+                    camera_schedule = [camera_schedule]
+                
+                logger.debug(f"📅 Fetched {len(camera_schedule)} camera schedules")
+            except requests.exceptions.RequestException as e:
+                logger.error(f"❌ Network error fetching camera schedules: {e}")
+                return None
+            except Exception as e:
+                logger.error(f"❌ Error parsing camera schedules: {e}")
+                return None
+            
+            # Find active schedule for this camera
+            for schedule in camera_schedule:
+                if schedule.get("camera_id") == self.camera_id and schedule.get("is_active"):
+                    timetable_id = schedule.get("timetable_id")
+                    logger.debug(f"   Checking timetable: {timetable_id}")
+                    
+                    # Find corresponding timetable entry
+                    for tt in timetable_data:
+                        if tt.get("_id") == timetable_id or tt.get("timetable_id") == timetable_id:
+                            tt_day = tt.get("day")
+                            tt_batch = tt.get("batch_id")
+                            is_exam = tt.get("is_exam", False)
                             
-                            if start_time <= current_time <= end_time:
-                                active_schedule = {
-                                    "subject_id": tt.get("subject_id"),
-                                    "teacher_id": tt.get("teacher_id"),
-                                    "room": tt.get("room", "Unknown Room"),
-                                    "start_time": start_time,
-                                    "end_time": end_time
-                                }
-                                break
-        
-        if active_schedule:
-            return active_schedule
-
-        # Test mode: allow attendance even without active schedule
-        if TEST_MODE_ALWAYS_ACTIVE and not require_exam:
-            if camera_schedule and timetable_data:
-                # Try to use the first linked timetable entry for subject/teacher
-                for schedule in camera_schedule:
-                    if schedule.get("camera_id") == self.camera_id and schedule.get("is_active"):
-                        timetable_id = schedule.get("timetable_id")
-                        for tt in timetable_data:
-                            if tt.get("timetable_id") == timetable_id:
-                                return {
-                                    "subject_id": tt.get("subject_id"),
-                                    "teacher_id": tt.get("teacher_id"),
-                                    "room": tt.get("room", "Unknown Room"),
-                                    "start_time": datetime.strptime("00:00", "%H:%M").time(),
-                                    "end_time": datetime.strptime("23:59", "%H:%M").time()
-                                }
+                            logger.debug(f"      Timetable: Day={tt_day}, Batch={tt_batch}, Exam={is_exam}")
+                            
+                            if require_exam and not is_exam:
+                                logger.debug(f"      ⏭️ Skipping: not an exam")
+                                continue
+                            if tt_day != current_day:
+                                logger.debug(f"      ⏭️ Skipping: wrong day ({tt_day} != {current_day})")
+                                continue
+                            if tt_batch != self.batch_id:
+                                logger.debug(f"      ⏭️ Skipping: wrong batch ({tt_batch} != {self.batch_id})")
+                                continue
+                            
+                            try:
+                                start_time = datetime.strptime(tt.get("start_time", "00:00"), "%H:%M").time()
+                                end_time = datetime.strptime(tt.get("end_time", "23:59"), "%H:%M").time()
+                                
+                                if start_time <= current_time <= end_time:
+                                    active_schedule = {
+                                        "subject_id": tt.get("subject_id"),
+                                        "teacher_id": tt.get("teacher_id"),
+                                        "room": tt.get("room", "Unknown Room"),
+                                        "start_time": start_time,
+                                        "end_time": end_time
+                                    }
+                                    logger.info(f"✅ Active class found: {tt.get('subject_id')} in {active_schedule['room']} ({start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')})")
+                                    return active_schedule
+                                else:
+                                    logger.debug(f"      ⏭️ Outside time window: {current_time} not in {start_time}-{end_time}")
+                            except ValueError as e:
+                                logger.warning(f"Could not parse times: {e}")
+                                continue
+        except Exception as e:
+            logger.error(f"Error getting current schedule: {e}", exc_info=True)
+            return None
 
         # Log once every 30 seconds when no schedule found
         now = datetime.now()
         if not self.last_schedule_log or (now - self.last_schedule_log).total_seconds() > 30:
-            logger.warning(f"⏱️ No active schedule for {self.camera_name} at {current_day} {current_time.strftime('%H:%M:%S')}")
+            logger.warning(f"⏱️ No active class for {self.camera_name} at {datetime.now().strftime('%A %H:%M:%S')}")
             self.last_schedule_log = now
+        
+        return None
+        
+        return None
 
         return None
     
     def detect_faces_in_frame(self, frame):
-        """Detect and recognize faces in frame"""
+        """Detect and recognize ALL faces in frame"""
         try:
             # Get all student embeddings
             embeddings_db = self.face_db.get_all_embeddings()
@@ -390,42 +462,56 @@ class CameraAttendance:
                 logger.warning("No student embeddings in database")
                 return []
             
-            # Get frame embedding and facial area
+            # Get ALL faces in frame
             try:
-                result = DeepFace.represent(frame, model_name=MODEL, enforce_detection=True)
-                if not result:
+                results = DeepFace.represent(frame, model_name=MODEL, enforce_detection=True)
+                if not results:
                     return []
-                
-                frame_embedding = np.array(result[0]["embedding"])
-                facial_area = result[0].get("facial_area", {})
-                face_x = facial_area.get("x", 0)
-                face_y = facial_area.get("y", 0)
-                face_w = facial_area.get("w", 0)
-                face_h = facial_area.get("h", 0)
             except Exception as e:
-                logger.debug(f"No face detected in frame: {e}")
+                logger.debug(f"No faces detected in frame: {e}")
                 return []
             
-            # Compare with all students
+            # Process each detected face
             recognized_students = []
             
-            for roll_number, student_embedding in embeddings_db.items():
-                # Calculate cosine similarity
-                similarity = np.dot(frame_embedding, student_embedding) / (
-                    np.linalg.norm(frame_embedding) * np.linalg.norm(student_embedding)
-                )
+            for result in results:
+                try:
+                    frame_embedding = np.array(result["embedding"])
+                    facial_area = result.get("facial_area", {})
+                    face_x = facial_area.get("x", 0)
+                    face_y = facial_area.get("y", 0)
+                    face_w = facial_area.get("w", 0)
+                    face_h = facial_area.get("h", 0)
+                    
+                    # Compare with all students
+                    best_match = None
+                    best_similarity = 0
+                    
+                    for roll_number, student_embedding in embeddings_db.items():
+                        # Calculate cosine similarity
+                        similarity = np.dot(frame_embedding, student_embedding) / (
+                            np.linalg.norm(frame_embedding) * np.linalg.norm(student_embedding)
+                        )
+                        
+                        if similarity >= SIMILARITY_THRESHOLD and similarity > best_similarity:
+                            best_similarity = similarity
+                            best_match = {
+                                "roll_number": roll_number,
+                                "similarity": float(similarity),
+                                "face_x": face_x,
+                                "face_y": face_y,
+                                "face_w": face_w,
+                                "face_h": face_h
+                            }
+                    
+                    if best_match:
+                        student = self.face_db.get_student_by_roll(best_match["roll_number"])
+                        best_match["name"] = student.get("name")
+                        recognized_students.append(best_match)
                 
-                if similarity >= SIMILARITY_THRESHOLD:
-                    student = self.face_db.get_student_by_roll(roll_number)
-                    recognized_students.append({
-                        "roll_number": roll_number,
-                        "name": student.get("name"),
-                        "similarity": float(similarity),
-                        "face_x": face_x,
-                        "face_y": face_y,
-                        "face_w": face_w,
-                        "face_h": face_h
-                    })
+                except Exception as e:
+                    logger.debug(f"Error processing face: {e}")
+                    continue
             
             return recognized_students
         
@@ -578,7 +664,7 @@ class CameraAttendance:
         schedule = self.get_current_schedule(require_exam=(mode == "EXAM"))
 
         if not schedule:
-            return {"status": "no_schedule", "mode": mode}
+            return {"status": "no_schedule", "mode": mode, "message": "No active class for this time slot"}
 
         if mode == "EXAM":
             result = self.handle_exam_frame(frame, schedule)
@@ -594,6 +680,9 @@ class CameraAttendance:
             self.face_cache_time = datetime.now()
             
             logger.info(f"🔎 Detected {len(recognized)} face(s) in frame")
+            marked_students = []
+            
+            # Mark attendance for ALL detected faces
             for student in recognized:
                 logger.info(f"   -> {student['name']} (similarity: {student['similarity']:.2f})")
                 marked = self.mark_attendance(
@@ -602,15 +691,19 @@ class CameraAttendance:
                     schedule
                 )
                 if marked:
-                    # Add visual indicator on frame
-                    return {"status": "marked", "student": student, "recognized": recognized, "mode": mode}
-            return {"status": "recognized", "recognized": recognized, "mode": mode}
+                    marked_students.append(student)
+            
+            # Return marked students and all recognized faces
+            if marked_students:
+                return {"status": "marked", "marked": marked_students, "recognized": recognized, "mode": mode}
+            else:
+                return {"status": "recognized", "recognized": recognized, "mode": mode}
         
         # Check if we have cached faces still valid
         if self.last_detected_faces and self.face_cache_time:
             cache_age = (datetime.now() - self.face_cache_time).total_seconds()
             if cache_age < self.FACE_CACHE_DURATION:
-                # Return cached faces
+                # Return cached faces but don't mark them again (already in cooldown)
                 return {"status": "recognized", "recognized": self.last_detected_faces, "mode": mode}
             else:
                 # Cache expired
@@ -721,17 +814,19 @@ class CameraAttendance:
                         frame = self.draw_faces_on_frame(frame, recognized)
                     
                     if status == "marked":
-                        student = detection_result.get("student", {})
-                        name = student.get("name", "Unknown")
-                        cv2.putText(frame, f"✅ ATTENDANCE MARKED: {name}", (10, 140),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 3)
+                        marked = detection_result.get("marked", [])
+                        if marked:
+                            names = ", ".join([m.get("name", "Unknown") for m in marked])
+                            cv2.putText(frame, f"✅ MARKED: {names}", (10, 140),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 3)
                         last_detection = datetime.now()
                     elif status == "recognized":
                         count = len(detection_result.get("recognized", []))
                         cv2.putText(frame, f"🔎 Detected {count} face(s)", (10, 140),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                     elif status == "no_schedule":
-                        cv2.putText(frame, "⏱️ No active schedule", (10, 140),
+                        message = detection_result.get("message", "No active class for this time slot")
+                        cv2.putText(frame, f"⏱️ {message}", (10, 140),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                     elif status == "phone_detected":
                         cv2.putText(frame, "📱 Phone detected (exam mode)", (10, 140),

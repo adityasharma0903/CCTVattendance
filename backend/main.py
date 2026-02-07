@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -7,6 +7,22 @@ import json
 import os
 from datetime import datetime
 import logging
+import cv2
+import numpy as np
+from io import BytesIO
+from deepface import DeepFace
+
+# Import Cloudinary utilities
+from cloudinary_utils import (
+    upload_student_image,
+    upload_from_file_path,
+    delete_student_image,
+    download_image_from_url,
+    validate_cloudinary_config
+)
+
+# Import MongoDB operations
+import db
 
 # ============================================================================
 # LOGGING SETUP
@@ -41,7 +57,9 @@ class Student(BaseModel):
     name: str
     batch_id: str
     email: Optional[str] = None
-    image_path: Optional[str] = None
+    image_url: Optional[str] = None  # Cloudinary URL
+    image_path: Optional[str] = None  # Legacy support
+    cloudinary_public_id: Optional[str] = None
     embedding: Optional[List[float]] = None
 
 class Batch(BaseModel):
@@ -139,419 +157,625 @@ def save_json_file(filename, data):
         return False
 
 # ============================================================================
-# STUDENTS ENDPOINTS
+# STUDENTS ENDPOINTS (MongoDB)
 # ============================================================================
 
 @app.get("/api/students", response_model=List[Dict])
 async def get_all_students():
-    """Get all students"""
-    students_data = load_json_file("students_database.json")
-    students_list = []
-    for roll_id, student_data in students_data.items():
-        students_list.append(student_data)
-    return students_list
+    """Get all students from MongoDB"""
+    try:
+        students = db.get_all_students()
+        return students
+    except Exception as e:
+        logger.error(f"Error getting students: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/students/{batch_id}", response_model=List[Dict])
 async def get_batch_students(batch_id: str):
-    """Get students from specific batch"""
-    students_data = load_json_file("students_database.json")
-    batch_students = []
-    for roll_id, student in students_data.items():
-        if student.get("batch_id") == batch_id or student.get("roll_number").startswith(batch_id):
-            batch_students.append(student)
-    return batch_students
+    """Get students from specific batch from MongoDB"""
+    try:
+        batch_students = db.get_batch_students(batch_id)
+        return batch_students
+    except Exception as e:
+        logger.error(f"Error getting batch students: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/students")
 async def add_student(student: Dict):
-    """Add new student"""
-    students_data = load_json_file("students_database.json")
-    roll_number = student.get("roll_number")
-    
-    if roll_number in students_data:
-        raise HTTPException(status_code=400, detail="Student already exists")
-    
-    students_data[roll_number] = {
-        "student_id": f"STU_{roll_number}",
-        "roll_number": roll_number,
-        "name": student.get("name"),
-        "batch_id": student.get("batch_id"),
-        "email": student.get("email"),
-        "image_path": student.get("image_path"),
-        "embedding": student.get("embedding"),
-        "added_date": datetime.now().isoformat()
-    }
-    
-    if save_json_file("students_database.json", students_data):
+    """Add new student to MongoDB"""
+    try:
+        roll_number = student.get("roll_number")
+        
+        # Check if student exists
+        existing = db.get_student_by_roll(roll_number)
+        if existing:
+            raise HTTPException(status_code=400, detail="Student already exists")
+        
+        student_data = {
+            "student_id": f"STU_{roll_number}",
+            "roll_number": roll_number,
+            "name": student.get("name"),
+            "batch_id": student.get("batch_id"),
+            "email": student.get("email"),
+            "image_path": student.get("image_path") or student.get("image_url"),  # Accept both field names
+            "image_url": student.get("image_url"),  # Save Cloudinary URL
+            "cloudinary_public_id": student.get("cloudinary_public_id"),
+            "embedding": student.get("embedding")
+        }
+        
+        result = db.add_student(student_data)
+        logger.info(f"✅ Student added to MongoDB: {roll_number}")
         return {"status": "success", "message": "Student added successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to add student")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding student: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/students/{roll_number}")
 async def update_student(roll_number: str, student: Dict):
-    """Update student information"""
-    students_data = load_json_file("students_database.json")
-    
-    if roll_number not in students_data:
-        raise HTTPException(status_code=404, detail="Student not found")
-    
-    students_data[roll_number].update(student)
-    
-    if save_json_file("students_database.json", students_data):
-        return {"status": "success", "message": "Student updated successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to update student")
+    """Update student information in MongoDB"""
+    try:
+        # Check if student exists
+        existing = db.get_student_by_roll(roll_number)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Student not found")
+        
+        success = db.update_student(roll_number, student)
+        if success:
+            logger.info(f"✅ Student updated in MongoDB: {roll_number}")
+            return {"status": "success", "message": "Student updated successfully"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to update student")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating student: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/students/{roll_number}")
 async def delete_student(roll_number: str):
-    """Delete student"""
-    students_data = load_json_file("students_database.json")
-    
-    if roll_number not in students_data:
-        raise HTTPException(status_code=404, detail="Student not found")
-    
-    del students_data[roll_number]
-    
-    if save_json_file("students_database.json", students_data):
-        return {"status": "success", "message": "Student deleted successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to delete student")
+    """Delete student from MongoDB"""
+    try:
+        # Check if student exists
+        existing = db.get_student_by_roll(roll_number)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Student not found")
+        
+        success = db.delete_student(roll_number)
+        if success:
+            logger.info(f"✅ Student deleted from MongoDB: {roll_number}")
+            return {"status": "success", "message": "Student deleted successfully"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to delete student")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting student: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/students/upload-image")
+async def upload_student_image_endpoint(
+    file: UploadFile = File(...),
+    student_id: str = Form(...),
+    roll_number: str = Form(...),
+    name: str = Form(...),
+    batch_id: str = Form(...),
+    email: Optional[str] = Form(None)
+):
+    """
+    Upload student image to Cloudinary, generate face embedding, and save to database
+    """
+    try:
+        # Validate Cloudinary config
+        if not validate_cloudinary_config():
+            raise HTTPException(
+                status_code=500,
+                detail="Cloudinary is not configured properly. Check environment variables."
+            )
+        
+        # Read image file
+        contents = await file.read()
+        
+        # Convert to OpenCV format for face detection
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            raise HTTPException(status_code=400, detail="Invalid image file")
+        
+        # Generate face embedding using DeepFace
+        logger.info(f"⏳ Generating face embedding for {name} (Roll: {roll_number})...")
+        try:
+            embedding_result = DeepFace.represent(
+                img,
+                model_name="ArcFace",
+                enforce_detection=True
+            )
+            embedding = embedding_result[0]["embedding"]
+            logger.info(f"✅ Face embedding generated successfully")
+        except Exception as e:
+            logger.error(f"❌ Face detection failed: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Face detection failed. Please ensure the image contains a clear, frontal face. Error: {str(e)}"
+            )
+        
+        # Upload image to Cloudinary
+        logger.info(f"⏳ Uploading image to Cloudinary for {name}...")
+        file.file.seek(0)  # Reset file pointer
+        upload_result = upload_student_image(file.file, student_id, roll_number)
+        
+        if not upload_result:
+            raise HTTPException(status_code=500, detail="Failed to upload image to Cloudinary")
+        
+        logger.info(f"✅ Image uploaded to Cloudinary: {upload_result['url']}")
+        
+        # Check if student exists and delete old image if needed
+        existing_student = db.get_student_by_roll(roll_number)
+        if existing_student:
+            old_public_id = existing_student.get("cloudinary_public_id")
+            if old_public_id and old_public_id != upload_result["public_id"]:
+                delete_student_image(old_public_id)
+        
+        # Save/Update in MongoDB
+        student_data = {
+            "student_id": student_id,
+            "roll_number": roll_number,
+            "name": name,
+            "batch_id": batch_id,
+            "email": email,
+            "image_url": upload_result["url"],
+            "cloudinary_public_id": upload_result["public_id"],
+            "embedding": embedding,
+            "image_metadata": {
+                "width": upload_result.get("width"),
+                "height": upload_result.get("height"),
+                "format": upload_result.get("format"),
+                "size_bytes": upload_result.get("bytes")
+            }
+        }
+        
+        # Check if student exists
+        existing = db.get_student_by_roll(roll_number)
+        if existing:
+            # Update existing
+            old_public_id = existing.get("cloudinary_public_id")
+            if old_public_id and old_public_id != upload_result["public_id"]:
+                delete_student_image(old_public_id)
+            db.update_student(roll_number, student_data)
+            logger.info(f"✅ Student {name} updated in MongoDB with Cloudinary image")
+        else:
+            # Add new
+            db.add_student(student_data)
+            logger.info(f"✅ Student {name} added to MongoDB with Cloudinary image")
+        
+        return {
+            "status": "success",
+            "message": f"Student {name} registered successfully with face recognition",
+            "data": {
+                "student_id": student_id,
+                "roll_number": roll_number,
+                "name": name,
+                "image_url": upload_result["url"],
+                "cloudinary_public_id": upload_result["public_id"]
+            }
+        }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error uploading student image: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.post("/api/students/{roll_number}/upload-image")
+async def update_student_image_endpoint(
+    roll_number: str,
+    file: UploadFile = File(...)
+):
+    """
+    Upload/Update image for existing student to Cloudinary and update MongoDB
+    """
+    try:
+        # Check if student exists
+        existing_student = db.get_student_by_roll(roll_number)
+        if not existing_student:
+            raise HTTPException(status_code=404, detail="Student not found")
+        
+        # Validate Cloudinary config
+        if not validate_cloudinary_config():
+            raise HTTPException(
+                status_code=500,
+                detail="Cloudinary is not configured properly. Check environment variables."
+            )
+        
+        # Read image file
+        contents = await file.read()
+        
+        # Convert to OpenCV format for face detection
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            raise HTTPException(status_code=400, detail="Invalid image file")
+        
+        # Generate face embedding using DeepFace
+        logger.info(f"⏳ Generating face embedding for {existing_student.get('name')}...")
+        try:
+            embedding_result = DeepFace.represent(
+                img,
+                model_name="ArcFace",
+                enforce_detection=True
+            )
+            embedding = embedding_result[0]["embedding"]
+            logger.info(f"✅ Face embedding generated successfully")
+        except Exception as e:
+            logger.error(f"❌ Face detection failed: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Face detection failed. Please ensure the image contains a clear, frontal face. Error: {str(e)}"
+            )
+        
+        # Upload image to Cloudinary
+        logger.info(f"⏳ Uploading image to Cloudinary...")
+        file.file.seek(0)  # Reset file pointer
+        student_id = existing_student.get("student_id", f"STU_{roll_number}")
+        upload_result = upload_student_image(file.file, student_id, roll_number)
+        
+        if not upload_result:
+            raise HTTPException(status_code=500, detail="Failed to upload image to Cloudinary")
+        
+        logger.info(f"✅ Image uploaded to Cloudinary: {upload_result['url']}")
+        
+        # Delete old image if exists
+        old_public_id = existing_student.get("cloudinary_public_id")
+        if old_public_id:
+            delete_student_image(old_public_id)
+        
+        # Update in MongoDB
+        update_data = {
+            "image_url": upload_result["url"],
+            "image_path": upload_result["url"],  # Keep both field names for consistency
+            "cloudinary_public_id": upload_result["public_id"],
+            "embedding": embedding,
+            "image_metadata": {
+                "width": upload_result.get("width"),
+                "height": upload_result.get("height"),
+                "format": upload_result.get("format"),
+                "size_bytes": upload_result.get("bytes")
+            }
+        }
+        
+        db.update_student(roll_number, update_data)
+        logger.info(f"✅ Student {existing_student.get('name')} image updated in MongoDB")
+        
+        return {
+            "status": "success",
+            "message": f"Student {existing_student.get('name')} image updated successfully",
+            "data": {
+                "roll_number": roll_number,
+                "image_url": upload_result["url"],
+                "cloudinary_public_id": upload_result["public_id"]
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error updating student image: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 # ============================================================================
-# BATCHES ENDPOINTS
+# BATCHES ENDPOINTS (MongoDB)
 # ============================================================================
 
 @app.get("/api/batches", response_model=List[Dict])
 async def get_all_batches():
-    """Get all batches"""
-    batches = load_json_file("batches.json")
-    return batches.get("batches", [])
+    """Get all batches from MongoDB"""
+    try:
+        batches = db.get_all_batches()
+        return batches
+    except Exception as e:
+        logger.error(f"Error getting batches: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/batches")
 async def add_batch(batch: Dict):
-    """Add new batch"""
-    batches_data = load_json_file("batches.json")
-    
-    new_batch = {
-        "batch_id": batch.get("batch_id"),
-        "batch_name": batch.get("batch_name"),
-        "semester": batch.get("semester"),
-        "total_students": 0
-    }
-    
-    batches_data.setdefault("batches", []).append(new_batch)
-    
-    if save_json_file("batches.json", batches_data):
+    """Add new batch to MongoDB"""
+    try:
+        batch_data = {
+            "batch_id": batch.get("batch_id"),
+            "batch_name": batch.get("batch_name"),
+            "semester": batch.get("semester"),
+            "total_students": 0
+        }
+        
+        result = db.add_batch(batch_data)
+        logger.info(f"✅ Batch added to MongoDB: {batch.get('batch_id')}")
         return {"status": "success", "message": "Batch added successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to add batch")
+    except Exception as e:
+        logger.error(f"Error adding batch: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# TEACHERS ENDPOINTS
+# TEACHERS ENDPOINTS (MongoDB)
 # ============================================================================
 
 @app.get("/api/teachers", response_model=List[Dict])
 async def get_all_teachers():
-    """Get all teachers"""
-    teachers = load_json_file("teachers.json")
-    return teachers.get("teachers", [])
+    """Get all teachers from MongoDB"""
+    try:
+        teachers = db.get_all_teachers()
+        return teachers
+    except Exception as e:
+        logger.error(f"Error getting teachers: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/teachers")
 async def add_teacher(teacher: Dict):
-    """Add new teacher"""
-    teachers_data = load_json_file("teachers.json")
-    
-    new_teacher = {
-        "teacher_id": teacher.get("teacher_id"),
-        "name": teacher.get("name"),
-        "email": teacher.get("email"),
-        "phone": teacher.get("phone")
-    }
-    
-    teachers_data.setdefault("teachers", []).append(new_teacher)
-    
-    if save_json_file("teachers.json", teachers_data):
+    """Add new teacher to MongoDB"""
+    try:
+        teacher_data = {
+            "teacher_id": teacher.get("teacher_id"),
+            "name": teacher.get("name"),
+            "email": teacher.get("email"),
+            "phone": teacher.get("phone")
+        }
+        
+        result = db.add_teacher(teacher_data)
+        logger.info(f"✅ Teacher added to MongoDB: {teacher.get('teacher_id')}")
         return {"status": "success", "message": "Teacher added successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to add teacher")
+    except Exception as e:
+        logger.error(f"Error adding teacher: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# SUBJECTS ENDPOINTS
+# SUBJECTS ENDPOINTS (MongoDB)
 # ============================================================================
 
 @app.get("/api/subjects", response_model=List[Dict])
 async def get_all_subjects():
-    """Get all subjects"""
-    subjects = load_json_file("subjects.json")
-    return subjects.get("subjects", [])
+    """Get all subjects from MongoDB"""
+    try:
+        subjects = db.get_all_subjects()
+        return subjects
+    except Exception as e:
+        logger.error(f"Error getting subjects: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/subjects")
 async def add_subject(subject: Dict):
-    """Add new subject"""
-    subjects_data = load_json_file("subjects.json")
-    
-    new_subject = {
-        "subject_id": subject.get("subject_id"),
-        "subject_name": subject.get("subject_name"),
-        "subject_code": subject.get("subject_code"),
-        "teacher_id": subject.get("teacher_id")
-    }
-    
-    subjects_data.setdefault("subjects", []).append(new_subject)
-    
-    if save_json_file("subjects.json", subjects_data):
+    """Add new subject to MongoDB"""
+    try:
+        subject_data = {
+            "subject_id": subject.get("subject_id"),
+            "subject_name": subject.get("subject_name"),
+            "subject_code": subject.get("subject_code"),
+            "teacher_id": subject.get("teacher_id")
+        }
+        
+        result = db.add_subject(subject_data)
+        logger.info(f"✅ Subject added to MongoDB: {subject.get('subject_id')}")
         return {"status": "success", "message": "Subject added successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to add subject")
+    except Exception as e:
+        logger.error(f"Error adding subject: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# CAMERAS ENDPOINTS
+# CAMERAS ENDPOINTS (MongoDB)
 # ============================================================================
 
 @app.get("/api/cameras", response_model=List[Dict])
 async def get_all_cameras():
-    """Get all cameras"""
-    cameras = load_json_file("cameras.json")
-    return cameras.get("cameras", [])
+    """Get all cameras from MongoDB"""
+    try:
+        cameras = db.get_all_cameras()
+        return cameras
+    except Exception as e:
+        logger.error(f"Error getting cameras: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/cameras/{batch_id}", response_model=List[Dict])
 async def get_batch_cameras(batch_id: str):
-    """Get cameras for specific batch"""
-    cameras = load_json_file("cameras.json")
-    batch_cameras = [cam for cam in cameras.get("cameras", []) if cam.get("batch_id") == batch_id]
-    return batch_cameras
-
-@app.post("/api/cameras")
-async def add_camera(camera: Dict):
-    """Add new camera"""
-    cameras_data = load_json_file("cameras.json")
-    
-    new_camera = {
-        "camera_id": camera.get("camera_id"),
-        "camera_name": camera.get("camera_name"),
-        "location": camera.get("location"),
-        "ip_address": camera.get("ip_address"),
-        "batch_id": camera.get("batch_id"),
-        "is_active": camera.get("is_active", True)
-    }
-    
-    cameras_data.setdefault("cameras", []).append(new_camera)
-    
-    if save_json_file("cameras.json", cameras_data):
-        # Ensure default mode for new camera
-        mode_data = load_json_file("camera_mode.json")
-        mode_data.setdefault("camera_modes", [])
-        existing = [m for m in mode_data.get("camera_modes", []) if m.get("camera_id") == new_camera.get("camera_id")]
-        if not existing:
-            mode_data["camera_modes"].append({
-                "camera_id": new_camera.get("camera_id"),
-                "mode": "NORMAL"
-            })
-            save_json_file("camera_mode.json", mode_data)
-        return {"status": "success", "message": "Camera added successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to add camera")
-
-@app.put("/api/cameras/{camera_id}")
-async def update_camera(camera_id: str, payload: Dict):
-    """Update camera details (e.g., location/room)"""
-    cameras_data = load_json_file("cameras.json")
-    updated = False
-    for cam in cameras_data.get("cameras", []):
-        if cam.get("camera_id") == camera_id:
-            cam.update(payload)
-            updated = True
-            break
-
-    if not updated:
-        raise HTTPException(status_code=404, detail="Camera not found")
-
-    if save_json_file("cameras.json", cameras_data):
-        return {"status": "success", "message": "Camera updated successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to update camera")
+    """Get cameras for specific batch from MongoDB"""
+    try:
+        batch_cameras = db.get_batch_cameras(batch_id)
+        return batch_cameras
+    except Exception as e:
+        logger.error(f"Error getting batch cameras: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# CAMERA MODE ENDPOINTS
+# CAMERA MODE ENDPOINTS (MongoDB)
 # ============================================================================
 
 @app.get("/api/camera-mode/{camera_id}")
 async def get_camera_mode(camera_id: str):
-    """Get mode for a specific camera"""
-    mode_data = load_json_file("camera_mode.json")
-    for entry in mode_data.get("camera_modes", []):
-        if entry.get("camera_id") == camera_id:
-            return {"camera_id": camera_id, "mode": entry.get("mode", "NORMAL")}
-    return {"camera_id": camera_id, "mode": "NORMAL"}
+    """Get mode for a specific camera from MongoDB"""
+    try:
+        mode = db.get_camera_mode(camera_id)
+        return {"camera_id": camera_id, "mode": mode}
+    except Exception as e:
+        logger.error(f"Error getting camera mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/camera-mode")
 async def set_camera_mode(payload: Dict):
-    """Set mode for a camera"""
-    camera_id = payload.get("camera_id")
-    mode = payload.get("mode", "NORMAL")
-    if mode not in ["NORMAL", "EXAM"]:
-        raise HTTPException(status_code=400, detail="Invalid mode")
-
-    mode_data = load_json_file("camera_mode.json")
-    mode_data.setdefault("camera_modes", [])
-
-    updated = False
-    for entry in mode_data.get("camera_modes", []):
-        if entry.get("camera_id") == camera_id:
-            entry["mode"] = mode
-            updated = True
-            break
-
-    if not updated:
-        mode_data["camera_modes"].append({"camera_id": camera_id, "mode": mode})
-
-    if save_json_file("camera_mode.json", mode_data):
+    """Set mode for a camera in MongoDB"""
+    try:
+        camera_id = payload.get("camera_id")
+        mode = payload.get("mode", "NORMAL")
+        
+        if mode not in ["NORMAL", "EXAM"]:
+            raise HTTPException(status_code=400, detail="Invalid mode")
+        
+        result = db.set_camera_mode(camera_id, mode)
+        logger.info(f"✅ Camera mode set in MongoDB: {camera_id} -> {mode}")
         return {"status": "success", "camera_id": camera_id, "mode": mode}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to set camera mode")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error setting camera mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# TIMETABLE ENDPOINTS
+# TIMETABLE ENDPOINTS (MongoDB)
 # ============================================================================
 
 @app.get("/api/timetable", response_model=List[Dict])
-async def get_timetable():
-    """Get all timetable entries"""
-    timetable = load_json_file("timetable.json")
-    return timetable.get("timetable", [])
+async def get_all_timetable():
+    """Get all timetable entries from MongoDB"""
+    try:
+        timetable = db.get_all_timetable()
+        return timetable
+    except Exception as e:
+        logger.error(f"Error getting timetable: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/timetable/{batch_id}", response_model=List[Dict])
 async def get_batch_timetable(batch_id: str):
-    """Get timetable for specific batch"""
-    timetable = load_json_file("timetable.json")
-    batch_timetable = [tt for tt in timetable.get("timetable", []) if tt.get("batch_id") == batch_id]
-    return batch_timetable
+    """Get timetable for specific batch from MongoDB"""
+    try:
+        batch_timetable = db.get_batch_timetable(batch_id)
+        return batch_timetable
+    except Exception as e:
+        logger.error(f"Error getting batch timetable: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/timetable")
-async def add_timetable(entry: Dict):
-    """Add timetable entry"""
-    timetable_data = load_json_file("timetable.json")
-    
-    new_entry = {
-        "timetable_id": entry.get("timetable_id"),
-        "batch_id": entry.get("batch_id"),
-        "day": entry.get("day"),
-        "period": entry.get("period"),
-        "start_time": entry.get("start_time"),
-        "end_time": entry.get("end_time"),
-        "subject_id": entry.get("subject_id"),
-        "teacher_id": entry.get("teacher_id"),
-        "room": entry.get("room", "Unknown Room"),
-        "is_exam": entry.get("is_exam", False)
-    }
-    
-    timetable_data.setdefault("timetable", []).append(new_entry)
-    
-    if save_json_file("timetable.json", timetable_data):
+async def add_timetable_entry(entry: Dict):
+    """Add new timetable entry to MongoDB"""
+    try:
+        timetable_data = {
+            "timetable_id": entry.get("timetable_id"),
+            "batch_id": entry.get("batch_id"),
+            "day": entry.get("day"),
+            "period": entry.get("period"),
+            "start_time": entry.get("start_time"),
+            "end_time": entry.get("end_time"),
+            "subject_id": entry.get("subject_id"),
+            "teacher_id": entry.get("teacher_id"),
+            "room": entry.get("room"),
+            "is_exam": entry.get("is_exam", False)
+        }
+        
+        result = db.add_timetable_entry(timetable_data)
+        logger.info(f"✅ Timetable entry added to MongoDB: {entry.get('timetable_id')}")
         return {"status": "success", "message": "Timetable entry added successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to add timetable entry")
+    except Exception as e:
+        logger.error(f"Error adding timetable entry: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# CAMERA SCHEDULE ENDPOINTS
+# CAMERA SCHEDULE ENDPOINTS (MongoDB)
 # ============================================================================
 
-@app.get("/api/camera-schedule", response_model=List[Dict])
-async def get_camera_schedule():
-    """Get all camera schedules"""
-    schedule = load_json_file("camera_schedule.json")
-    return schedule.get("camera_schedule", [])
+@app.get("/api/camera-schedules", response_model=List[Dict])
+async def get_all_camera_schedules():
+    """Get all camera schedules from MongoDB"""
+    try:
+        schedules = db.get_all_camera_schedules()
+        return schedules
+    except Exception as e:
+        logger.error(f"Error getting camera schedules: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/camera-schedule/{camera_id}", response_model=List[Dict])
 async def get_camera_schedule_by_id(camera_id: str):
-    """Get schedule for specific camera"""
-    schedule = load_json_file("camera_schedule.json")
-    cam_schedule = [s for s in schedule.get("camera_schedule", []) if s.get("camera_id") == camera_id]
-    return cam_schedule
+    """Get schedule for specific camera from MongoDB"""
+    try:
+        cam_schedule = db.get_camera_schedules(camera_id)
+        return cam_schedule
+    except Exception as e:
+        logger.error(f"Error getting camera schedule: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/camera-schedule")
 async def add_camera_schedule(schedule: Dict):
-    """Add camera schedule"""
-    schedule_data = load_json_file("camera_schedule.json")
-    
-    new_schedule = {
-        "schedule_id": schedule.get("schedule_id"),
-        "camera_id": schedule.get("camera_id"),
-        "timetable_id": schedule.get("timetable_id"),
-        "is_active": schedule.get("is_active", True)
-    }
-    
-    schedule_data.setdefault("camera_schedule", []).append(new_schedule)
-    
-    if save_json_file("camera_schedule.json", schedule_data):
+    """Add camera schedule to MongoDB"""
+    try:
+        schedule_data = {
+            "schedule_id": schedule.get("schedule_id"),
+            "camera_id": schedule.get("camera_id"),
+            "timetable_id": schedule.get("timetable_id"),
+            "is_active": schedule.get("is_active", True)
+        }
+        
+        result = db.add_camera_schedule(schedule_data)
+        logger.info(f"✅ Camera schedule added to MongoDB")
         return {"status": "success", "message": "Camera schedule added successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to add camera schedule")
+    except Exception as e:
+        logger.error(f"Error adding camera schedule: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# ATTENDANCE ENDPOINTS
+# ATTENDANCE ENDPOINTS (MongoDB)
 # ============================================================================
 
 @app.get("/api/attendance", response_model=List[Dict])
 async def get_all_attendance():
-    """Get all attendance records"""
-    attendance = load_json_file("attendance.json")
-    return attendance.get("attendance", [])
+    """Get all attendance records from MongoDB"""
+    try:
+        attendance = db.get_all_attendance()
+        return attendance
+    except Exception as e:
+        logger.error(f"Error getting attendance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/attendance/{batch_id}", response_model=List[Dict])
 async def get_batch_attendance(batch_id: str):
-    """Get attendance for specific batch"""
-    attendance = load_json_file("attendance.json")
-    batch_attendance = [a for a in attendance.get("attendance", []) if a.get("batch_id") == batch_id]
-    return batch_attendance
+    """Get attendance for specific batch from MongoDB"""
+    try:
+        batch_attendance = db.get_batch_attendance(batch_id)
+        return batch_attendance
+    except Exception as e:
+        logger.error(f"Error getting batch attendance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/attendance/student/{roll_number}", response_model=List[Dict])
 async def get_student_attendance(roll_number: str):
-    """Get attendance for specific student"""
-    attendance = load_json_file("attendance.json")
-    student_attendance = [a for a in attendance.get("attendance", []) if a.get("roll_number") == roll_number]
-    return student_attendance
+    """Get attendance for specific student from MongoDB"""
+    try:
+        student_attendance = db.get_student_attendance(roll_number)
+        return student_attendance
+    except Exception as e:
+        logger.error(f"Error getting student attendance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/attendance-check")
 async def check_attendance_exists(roll_number: str, date: str, subject_id: str, batch_id: str):
-    """Check if attendance already exists for student on given date and subject"""
-    attendance_data = load_json_file("attendance.json")
-    
-    for record in attendance_data.get("attendance", []):
-        # Check if same student, subject, batch, and same day
-        record_date = record.get("timestamp", "")[:10]  # Get YYYY-MM-DD part
-        
-        if (record.get("roll_number") == roll_number and
-            record.get("subject_id") == subject_id and
-            record.get("batch_id") == batch_id and
-            record_date == date):
+    """Check if attendance already exists for student on given date and subject in MongoDB"""
+    try:
+        record = db.check_attendance_exists(roll_number, date, subject_id, batch_id)
+        if record:
             return {"exists": True, "record": record}
-    
-    return {"exists": False}
+        return {"exists": False}
+    except Exception as e:
+        logger.error(f"Error checking attendance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/attendance")
 async def mark_attendance(record: Dict):
-    """Mark attendance for a student"""
-    attendance_data = load_json_file("attendance.json")
-    
-    import uuid
-    new_record = {
-        "attendance_id": str(uuid.uuid4()),
-        "student_id": record.get("student_id"),
-        "roll_number": record.get("roll_number"),
-        "camera_id": record.get("camera_id"),
-        "timestamp": record.get("timestamp", datetime.now().isoformat()),
-        "subject_id": record.get("subject_id"),
-        "batch_id": record.get("batch_id"),
-        "status": record.get("status", "PRESENT"),
-        "confidence_score": record.get("confidence_score", 0.0)
-    }
-    
-    attendance_data.setdefault("attendance", []).append(new_record)
-    
-    if save_json_file("attendance.json", attendance_data):
+    """Mark attendance for a student in MongoDB"""
+    try:
+        import uuid
+        new_record = {
+            "attendance_id": str(uuid.uuid4()),
+            "student_id": record.get("student_id"),
+            "roll_number": record.get("roll_number"),
+            "camera_id": record.get("camera_id"),
+            "timestamp": record.get("timestamp", datetime.now().isoformat()),
+            "subject_id": record.get("subject_id"),
+            "batch_id": record.get("batch_id"),
+            "status": record.get("status", "PRESENT"),
+            "confidence_score": record.get("confidence_score", 0.0)
+        }
+        
+        result = db.add_attendance(new_record)
+        logger.info(f"✅ Attendance marked in MongoDB for {record.get('roll_number')}")
         return {"status": "success", "message": "Attendance marked successfully", "record": new_record}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to mark attendance")
+    except Exception as e:
+        logger.error(f"❌ Error marking attendance: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to mark attendance: {str(e)}")
 
 # ============================================================================
 # DASHBOARD & REPORTS
@@ -559,90 +783,77 @@ async def mark_attendance(record: Dict):
 
 @app.get("/api/dashboard/summary")
 async def get_dashboard_summary():
-    """Get dashboard summary"""
-    students = load_json_file("students_database.json")
-    batches = load_json_file("batches.json")
-    teachers = load_json_file("teachers.json")
-    cameras = load_json_file("cameras.json")
-    attendance = load_json_file("attendance.json")
-    
-    return {
-        "total_students": len(students),
-        "total_batches": len(batches.get("batches", [])),
-        "total_teachers": len(teachers.get("teachers", [])),
-        "total_cameras": len(cameras.get("cameras", [])),
-        "total_attendance_records": len(attendance.get("attendance", []))
-    }
+    """Get dashboard summary from MongoDB"""
+    try:
+        summary = db.get_dashboard_summary()
+        return summary
+    except Exception as e:
+        logger.error(f"Error getting dashboard summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/attendance/report/{batch_id}")
 async def get_attendance_report(batch_id: str):
-    """Get attendance report for a batch"""
-    attendance_data = load_json_file("attendance.json")
-    batch_attendance = [a for a in attendance_data.get("attendance", []) if a.get("batch_id") == batch_id]
-    
-    # Calculate statistics
-    total_records = len(batch_attendance)
-    present_count = len([a for a in batch_attendance if a.get("status") == "PRESENT"])
-    absent_count = len([a for a in batch_attendance if a.get("status") == "ABSENT"])
-    late_count = len([a for a in batch_attendance if a.get("status") == "LATE"])
-    
-    return {
-        "batch_id": batch_id,
-        "total_records": total_records,
-        "present": present_count,
-        "absent": absent_count,
-        "late": late_count,
-        "attendance_percentage": (present_count / total_records * 100) if total_records > 0 else 0
-    }
+    """Get attendance report for a batch from MongoDB"""
+    try:
+        batch_attendance = db.get_batch_attendance(batch_id)
+        
+        # Calculate statistics
+        total_records = len(batch_attendance)
+        present_count = len([a for a in batch_attendance if a.get("status") == "PRESENT"])
+        absent_count = len([a for a in batch_attendance if a.get("status") == "ABSENT"])
+        late_count = len([a for a in batch_attendance if a.get("status") == "LATE"])
+        
+        return {
+            "batch_id": batch_id,
+            "total_records": total_records,
+            "present": present_count,
+            "absent": absent_count,
+            "late": late_count,
+            "attendance_percentage": (present_count / total_records * 100) if total_records > 0 else 0
+        }
+    except Exception as e:
+        logger.error(f"Error getting attendance report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# EXAM VIOLATIONS (PHONE DETECTION)
+# EXAM VIOLATIONS ENDPOINTS (MongoDB)
 # ============================================================================
-
-def load_exam_violations():
-    """Load exam violations from file"""
-    filepath = os.path.join(DATA_DIR, "exam_violations.json")
-    if not os.path.exists(filepath):
-        return []
-    try:
-        with open(filepath, 'r') as f:
-            data = json.load(f)
-            return data.get("violations", [])
-    except Exception as e:
-        logger.error(f"Error loading exam violations: {e}")
-        return []
-
-def save_exam_violations(violations):
-    """Save exam violations to file"""
-    filepath = os.path.join(DATA_DIR, "exam_violations.json")
-    try:
-        with open(filepath, 'w') as f:
-            json.dump({"violations": violations}, f, indent=2)
-    except Exception as e:
-        logger.error(f"Error saving exam violations: {e}")
 
 @app.get("/api/exam-violations")
 async def get_exam_violations():
-    """Get all exam violations (phone detections)"""
-    violations = load_exam_violations()
-    return violations
+    """Get all exam violations from MongoDB"""
+    try:
+        violations = db.get_all_exam_violations()
+        return violations
+    except Exception as e:
+        logger.error(f"Error getting exam violations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/exam-violations")
 async def add_exam_violation(violation: ExamViolation):
-    """Add new exam violation (phone detection)"""
-    violations = load_exam_violations()
-    violation_dict = violation.dict()
-    violations.append(violation_dict)
-    save_exam_violations(violations)
-    return {
-        "status": "success",
-        "violation_id": violation.violation_id,
-        "message": "Phone detection violation recorded"
-    }
+    """Add new exam violation to MongoDB"""
+    try:
+        violation_dict = violation.dict()
+        result = db.add_exam_violation(violation_dict)
+        logger.info(f"✅ Exam violation added to MongoDB: {violation.violation_id}")
+        return {
+            "status": "success",
+            "violation_id": violation.violation_id,
+            "message": "Phone detection violation recorded"
+        }
+    except Exception as e:
+        logger.error(f"Error adding exam violation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/exam-violations/{student_id}")
 async def get_student_violations(student_id: str):
-    """Get all violations for a specific student"""
+    """Get all violations for a specific student from MongoDB"""
+    try:
+        violations = db.get_student_violations(student_id)
+        return violations
+    except Exception as e:
+        logger.error(f"Error getting student violations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     violations = load_exam_violations()
     student_violations = [v for v in violations if v.get("student_id") == student_id]
     return student_violations

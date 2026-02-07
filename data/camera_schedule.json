@@ -137,6 +137,30 @@
       "camera_id": "CAM_001",
       "timetable_id": "TT345678",
       "is_active": true
+    },
+    {
+      "schedule_id": "CS_1770092835118",
+      "camera_id": "CAM_001",
+      "timetable_id": "TT0-98765432",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1770356882283",
+      "camera_id": "CAM_001",
+      "timetable_id": "TTBACKEND",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1770372119098",
+      "camera_id": "CAM_001",
+      "timetable_id": "TTIOT",
+      "is_active": true
+    },
+    {
+      "schedule_id": "CS_1770388753309",
+      "camera_id": "CAM_001",
+      "timetable_id": "TTHOME",
+      "is_active": true
     }
   ]
 }

@@ -517,7 +517,15 @@
       0.06410481780767441,
       0.22735589742660522
     ],
-    "added_date": "2026-01-29 12:53:24"
+    "added_date": "2026-01-29 12:53:24",
+    "image_url": "https://res.cloudinary.com/dt9rynyvt/image/upload/v1770387466/face_recognition/students/face_recognition/students/2410990250_STU_2410990250.jpg",
+    "cloudinary_public_id": "face_recognition/students/face_recognition/students/2410990250_STU_2410990250",
+    "image_metadata": {
+      "width": 1600,
+      "height": 1600,
+      "format": "jpg",
+      "size_bytes": 624027
+    }
   },
   "2410990315": {
     "name": "vaibhav",
@@ -1037,6 +1045,14 @@
       0.027153439819812775,
       -0.14464521408081055
     ],
-    "added_date": "2026-01-30 11:34:49"
+    "added_date": "2026-01-30 11:34:49",
+    "image_url": "https://res.cloudinary.com/dt9rynyvt/image/upload/v1770387468/face_recognition/students/face_recognition/students/2410990315_STU_2410990315.jpg",
+    "cloudinary_public_id": "face_recognition/students/face_recognition/students/2410990315_STU_2410990315",
+    "image_metadata": {
+      "width": 1280,
+      "height": 720,
+      "format": "jpg",
+      "size_bytes": 183630
+    }
   }
 }
