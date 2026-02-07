@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Using MongoDB Atlas (Cloud)
 # Connection string format:
-# mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority
+
 
 # Get from .env file or environment variables
 MONGODB_URL = os.getenv("MONGODB_URL")
