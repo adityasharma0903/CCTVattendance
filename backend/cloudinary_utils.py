@@ -82,6 +82,52 @@ def upload_student_image(image_file, student_id: str, roll_number: str) -> Optio
         return None
 
 
+def upload_student_image_variant(
+    image_file,
+    student_id: str,
+    roll_number: str,
+    variant: str
+) -> Optional[Dict]:
+    """
+    Upload a variant of a student image to Cloudinary without overwriting.
+
+    Args:
+        image_file: File object or file path
+        student_id: Unique student ID
+        roll_number: Student roll number
+        variant: Variant suffix (e.g. "1", "2", "front")
+
+    Returns:
+        Dict with image URL and public_id, or None if failed
+    """
+    try:
+        folder_path = f"face_recognition/students"
+        public_id = f"{folder_path}/{roll_number}_{student_id}_{variant}"
+
+        result = cloudinary.uploader.upload(
+            image_file,
+            public_id=public_id,
+            folder=folder_path,
+            overwrite=False,
+            resource_type="image",
+            tags=["student", "face_recognition", roll_number]
+        )
+
+        logger.info(f"✅ Image variant uploaded successfully for student {roll_number}")
+
+        return {
+            "url": result["secure_url"],
+            "public_id": result["public_id"],
+            "width": result.get("width"),
+            "height": result.get("height"),
+            "format": result.get("format"),
+            "bytes": result.get("bytes")
+        }
+    except Exception as e:
+        logger.error(f"❌ Error uploading image variant for student {roll_number}: {e}")
+        return None
+
+
 def upload_from_file_path(file_path: str, student_id: str, roll_number: str) -> Optional[Dict]:
     """
     Upload student image from local file path to Cloudinary

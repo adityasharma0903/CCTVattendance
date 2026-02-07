@@ -9,8 +9,18 @@ function StudentManager({ apiBase }) {
     batch_id: '',
     email: ''
   });
-  const [selectedImage, setSelectedImage] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
+  const [selectedImages, setSelectedImages] = useState({
+    front: null,
+    left: null,
+    right: null,
+    far: null
+  });
+  const [imagePreviews, setImagePreviews] = useState({
+    front: null,
+    left: null,
+    right: null,
+    far: null
+  });
   const [uploading, setUploading] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
@@ -47,37 +57,48 @@ function StudentManager({ apiBase }) {
     }));
   };
 
-  const handleImageChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      // Validate file type
-      if (!file.type.startsWith('image/')) {
-        alert('❌ Please select an image file');
-        return;
-      }
-      
-      // Validate file size (max 5MB)
-      if (file.size > 5 * 1024 * 1024) {
-        alert('❌ Image size should be less than 5MB');
-        return;
-      }
-      
-      setSelectedImage(file);
-      
-      // Create preview
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImagePreview(reader.result);
-      };
-      reader.readAsDataURL(file);
+  const validateImage = (file) => {
+    if (!file.type.startsWith('image/')) {
+      alert('❌ Please select only image files');
+      return false;
     }
+    if (file.size > 5 * 1024 * 1024) {
+      alert('❌ Each image should be less than 5MB');
+      return false;
+    }
+    return true;
+  };
+
+  const handleImageChange = (key) => (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) {
+      return;
+    }
+
+    if (!validateImage(file)) {
+      return;
+    }
+
+    if (imagePreviews[key]) {
+      URL.revokeObjectURL(imagePreviews[key]);
+    }
+
+    setSelectedImages(prev => ({
+      ...prev,
+      [key]: file
+    }));
+
+    setImagePreviews(prev => ({
+      ...prev,
+      [key]: URL.createObjectURL(file)
+    }));
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    if (!selectedImage) {
-      alert('❌ Please select a student image');
+    if (!selectedImages.front || !selectedImages.left || !selectedImages.right || !selectedImages.far) {
+      alert('❌ Please select all 4 photos: front, left, right, far');
       return;
     }
     
@@ -86,7 +107,10 @@ function StudentManager({ apiBase }) {
     try {
       // Create FormData for multipart/form-data upload
       const uploadData = new FormData();
-      uploadData.append('file', selectedImage);
+      uploadData.append('front_image', selectedImages.front);
+      uploadData.append('left_image', selectedImages.left);
+      uploadData.append('right_image', selectedImages.right);
+      uploadData.append('far_image', selectedImages.far);
       uploadData.append('student_id', `STU_${formData.roll_number}`);
       uploadData.append('roll_number', formData.roll_number);
       uploadData.append('name', formData.name);
@@ -95,7 +119,7 @@ function StudentManager({ apiBase }) {
         uploadData.append('email', formData.email);
       }
       
-      const response = await fetch(`${apiBase}/students/upload-image`, {
+      const response = await fetch(`${apiBase}/students/upload-images`, {
         method: 'POST',
         body: uploadData
         // Don't set Content-Type header - browser will set it with boundary
@@ -111,8 +135,23 @@ function StudentManager({ apiBase }) {
           batch_id: '',
           email: ''
         });
-        setSelectedImage(null);
-        setImagePreview(null);
+        Object.values(imagePreviews).forEach((url) => {
+          if (url) {
+            URL.revokeObjectURL(url);
+          }
+        });
+        setSelectedImages({
+          front: null,
+          left: null,
+          right: null,
+          far: null
+        });
+        setImagePreviews({
+          front: null,
+          left: null,
+          right: null,
+          far: null
+        });
         setShowForm(false);
         alert(`✅ ${result.message}\n\nImage uploaded to Cloudinary!\nStudent registered with face recognition.`);
       } else {
@@ -224,34 +263,83 @@ function StudentManager({ apiBase }) {
 
           <div style={{marginBottom: '15px'}}>
             <label style={{display: 'block', marginBottom: '5px', fontWeight: 'bold'}}>
-              Student Photo * (Face Recognition)
+              Student Photos * (Front, Left, Right, Far)
             </label>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={handleImageChange}
-              required
-              style={{width: '100%', padding: '10px'}}
-            />
+            <div style={{display: 'grid', gap: '10px'}}>
+              <div>
+                <label style={{display: 'block', marginBottom: '5px'}}>Front *</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageChange('front')}
+                  required
+                  style={{width: '100%', padding: '10px'}}
+                />
+              </div>
+              <div>
+                <label style={{display: 'block', marginBottom: '5px'}}>Left *</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageChange('left')}
+                  required
+                  style={{width: '100%', padding: '10px'}}
+                />
+              </div>
+              <div>
+                <label style={{display: 'block', marginBottom: '5px'}}>Right *</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageChange('right')}
+                  required
+                  style={{width: '100%', padding: '10px'}}
+                />
+              </div>
+              <div>
+                <label style={{display: 'block', marginBottom: '5px'}}>Far *</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageChange('far')}
+                  required
+                  style={{width: '100%', padding: '10px'}}
+                />
+              </div>
+            </div>
             <small style={{color: '#666'}}>
-              📸 Please upload a clear frontal face photo (JPEG/PNG, max 5MB)
+              📸 Upload 4 clear face photos (front, left, right, far). Max 5MB each.
             </small>
           </div>
 
-          {imagePreview && (
+          {(imagePreviews.front || imagePreviews.left || imagePreviews.right || imagePreviews.far) && (
             <div style={{marginBottom: '15px', textAlign: 'center'}}>
               <p style={{fontWeight: 'bold', marginBottom: '10px'}}>Preview:</p>
-              <img 
-                src={imagePreview} 
-                alt="Preview" 
-                style={{
-                  maxWidth: '200px', 
-                  maxHeight: '200px', 
-                  border: '2px solid #007bff',
-                  borderRadius: '8px',
-                  objectFit: 'cover'
-                }}
-              />
+              <div style={{display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap'}}>
+                {[
+                  { key: 'front', label: 'Front' },
+                  { key: 'left', label: 'Left' },
+                  { key: 'right', label: 'Right' },
+                  { key: 'far', label: 'Far' }
+                ].map((item) => (
+                  imagePreviews[item.key] ? (
+                    <div key={item.key} style={{textAlign: 'center'}}>
+                      <img
+                        src={imagePreviews[item.key]}
+                        alt={`${item.label} preview`}
+                        style={{
+                          width: '90px',
+                          height: '90px',
+                          border: '2px solid #007bff',
+                          borderRadius: '8px',
+                          objectFit: 'cover'
+                        }}
+                      />
+                      <div style={{fontSize: '12px', color: '#666', marginTop: '4px'}}>{item.label}</div>
+                    </div>
+                  ) : null
+                ))}
+              </div>
             </div>
           )}
 
@@ -293,9 +381,9 @@ function StudentManager({ apiBase }) {
               <td>{student.batch_id || 'N/A'}</td>
               <td>{student.email || 'N/A'}</td>
               <td>
-                {student.image_url ? (
+                {(student.image_url || (student.image_urls && student.image_urls.length > 0)) ? (
                   <img 
-                    src={student.image_url} 
+                    src={student.image_url || student.image_urls[0]} 
                     alt={student.name}
                     style={{
                       width: '50px',

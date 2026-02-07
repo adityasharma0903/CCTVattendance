@@ -12,9 +12,16 @@ import numpy as np
 from io import BytesIO
 from deepface import DeepFace
 
+# Pinecone imports
+try:
+    import pinecone
+except Exception:
+    pinecone = None
+
 # Import Cloudinary utilities
 from cloudinary_utils import (
     upload_student_image,
+    upload_student_image_variant,
     upload_from_file_path,
     delete_student_image,
     download_image_from_url,
@@ -46,6 +53,46 @@ app.add_middleware(
 
 # Data directory
 DATA_DIR = "../data"
+FACE_ENROLL_DETECTOR_BACKEND = os.getenv("FACE_ENROLL_DETECTOR_BACKEND", "retinaface")
+
+# ============================================================================
+# PINECONE CONFIGURATION
+# ============================================================================
+PINECONE_ENABLED = os.getenv("PINECONE_ENABLED", "1") == "1"
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "face-recognition")
+PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east-1-aws")
+
+def init_pinecone():
+    """Initialize Pinecone for vector search"""
+    if not PINECONE_ENABLED or pinecone is None or not PINECONE_API_KEY:
+        logger.warning("⚠️ Pinecone not enabled or API key missing")
+        return None
+
+    try:
+        pinecone.init(
+            api_key=PINECONE_API_KEY,
+            environment=PINECONE_ENVIRONMENT
+        )
+
+        if PINECONE_INDEX_NAME not in pinecone.list_indexes():
+            logger.info(f"📝 Creating Pinecone index: {PINECONE_INDEX_NAME}")
+            pinecone.create_index(
+                name=PINECONE_INDEX_NAME,
+                dimension=512,
+                metric="cosine"
+            )
+
+        pc_index = pinecone.Index(PINECONE_INDEX_NAME)
+        logger.info(f"✅ Pinecone initialized: {PINECONE_INDEX_NAME}")
+        return pc_index
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Pinecone: {e}")
+        return None
+
+pinecone_index = init_pinecone()
+
+
 
 # ============================================================================
 # PYDANTIC MODELS
@@ -366,6 +413,154 @@ async def upload_student_image_endpoint(
         raise
     except Exception as e:
         logger.error(f"❌ Error uploading student image: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.post("/api/students/upload-images")
+async def upload_student_images_endpoint(
+    front_image: UploadFile = File(...),
+    left_image: UploadFile = File(...),
+    right_image: UploadFile = File(...),
+    far_image: UploadFile = File(...),
+    student_id: str = Form(...),
+    roll_number: str = Form(...),
+    name: str = Form(...),
+    batch_id: str = Form(...),
+    email: Optional[str] = Form(None)
+):
+    """
+    Upload 4 labeled student images to Cloudinary, generate averaged embedding, and save to database
+    """
+    try:
+        if not validate_cloudinary_config():
+            raise HTTPException(
+                status_code=500,
+                detail="Cloudinary is not configured properly. Check environment variables."
+            )
+
+        labeled_files = [
+            ("front", front_image),
+            ("left", left_image),
+            ("right", right_image),
+            ("far", far_image)
+        ]
+
+        embeddings = []
+        upload_results = []
+        image_metadata = []
+
+        for label, file in labeled_files:
+            contents = await file.read()
+            nparr = np.frombuffer(contents, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            if img is None:
+                raise HTTPException(status_code=400, detail="Invalid image file")
+
+            try:
+                embedding_result = DeepFace.represent(
+                    img,
+                    model_name="ArcFace",
+                    enforce_detection=True,
+                    detector_backend=FACE_ENROLL_DETECTOR_BACKEND
+                )
+                embeddings.append(np.array(embedding_result[0]["embedding"], dtype=float))
+            except Exception as e:
+                logger.error(f"❌ Face detection failed on {label} image: {e}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Face detection failed. Please upload clear face photos."
+                )
+
+            upload_result = upload_student_image_variant(
+                BytesIO(contents),
+                student_id,
+                roll_number,
+                label
+            )
+
+            if not upload_result:
+                raise HTTPException(status_code=500, detail="Failed to upload image to Cloudinary")
+
+            upload_results.append(upload_result)
+            image_metadata.append({
+                "label": label,
+                "width": upload_result.get("width"),
+                "height": upload_result.get("height"),
+                "format": upload_result.get("format"),
+                "size_bytes": upload_result.get("bytes")
+            })
+
+        avg_embedding = np.mean(np.stack(embeddings), axis=0).tolist()
+        image_urls = [result["url"] for result in upload_results]
+        public_ids = [result["public_id"] for result in upload_results]
+        primary_url = image_urls[0] if image_urls else None
+
+        existing_student = db.get_student_by_roll(roll_number)
+        if existing_student:
+            old_public_ids = existing_student.get("cloudinary_public_ids") or []
+            if isinstance(old_public_ids, list):
+                for public_id in old_public_ids:
+                    delete_student_image(public_id)
+            old_public_id = existing_student.get("cloudinary_public_id")
+            if old_public_id:
+                delete_student_image(old_public_id)
+
+            if pinecone_index is not None:
+                try:
+                    pinecone_index.delete(ids=[roll_number], namespace="face-recognition")
+                    logger.info(f"✅ Deleted old Pinecone embedding for {roll_number}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to delete old Pinecone embedding: {e}")
+
+        student_data = {
+            "student_id": student_id,
+            "roll_number": roll_number,
+            "name": name,
+            "batch_id": batch_id,
+            "email": email,
+            "image_url": primary_url,
+            "image_path": primary_url,
+            "image_urls": image_urls,
+            "cloudinary_public_id": public_ids[0] if public_ids else None,
+            "cloudinary_public_ids": public_ids,
+            "embedding": avg_embedding,
+            "image_metadata": image_metadata
+        }
+
+        if existing_student:
+            db.update_student(roll_number, student_data)
+            logger.info(f"✅ Student {name} updated in MongoDB with multi-image embeddings")
+        else:
+            db.add_student(student_data)
+            logger.info(f"✅ Student {name} added to MongoDB with multi-image embeddings")
+
+        if pinecone_index is not None:
+            try:
+                embedding_vector = np.array(avg_embedding, dtype="float32").tolist()
+                pinecone_index.upsert(
+                    vectors=[(roll_number, embedding_vector)],
+                    namespace="face-recognition"
+                )
+                logger.info(f"✅ Pushed embedding to Pinecone for {roll_number}")
+            except Exception as e:
+                logger.error(f"❌ Failed to push embedding to Pinecone: {e}")
+
+        return {
+            "status": "success",
+            "message": f"Student {name} registered successfully with 4 photos",
+            "data": {
+                "student_id": student_id,
+                "roll_number": roll_number,
+                "name": name,
+                "image_urls": image_urls,
+                "cloudinary_public_ids": public_ids
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error uploading student images: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/api/students/{roll_number}/upload-image")

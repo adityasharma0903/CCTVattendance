@@ -129,6 +129,11 @@ def add_student(student_data: Dict) -> Dict:
         "batch_id": student_data.get("batch_id"),
         "email": student_data.get("email"),
         "image_path": student_data.get("image_path"),
+        "image_url": student_data.get("image_url"),
+        "image_urls": student_data.get("image_urls"),
+        "cloudinary_public_id": student_data.get("cloudinary_public_id"),
+        "cloudinary_public_ids": student_data.get("cloudinary_public_ids"),
+        "image_metadata": student_data.get("image_metadata"),
         "embedding": student_data.get("embedding"),
         "added_date": datetime.now().isoformat()
     }

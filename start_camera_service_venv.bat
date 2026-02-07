@@ -7,7 +7,7 @@ echo.
 cd camera_service
 echo Current directory: %CD%
 echo.
-echo Starting with virtual environment Python...
+echo Starting with virtual environment Python (root .venv)...
 echo.
-venv\Scripts\python.exe attendance_service.py
+..\.venv\Scripts\python.exe attendance_service.py
 pause
