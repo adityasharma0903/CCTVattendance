@@ -16,3 +16,21 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+
+# Node
+node_modules/
+frontend/node_modules/
+
+# Cache
+.cache/
+**/.cache/
+frontend/node_modules/.cache/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# MJPEG temp
+current_frame.jpg
