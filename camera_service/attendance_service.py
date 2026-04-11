@@ -30,11 +30,12 @@ except Exception:
     DeepSort = None
 
 # ============================================================================
-# LOGGING SETUP - Only show important logs (WARNING level)
+# LOGGING SETUP
 # ============================================================================
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=logging.WARNING,
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
     format='%(levelname)s:%(name)s: %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.45"))
 MODEL = "ArcFace"
 DETECTION_INTERVAL = 2.0
 ATTENDANCE_COOLDOWN = 30  # Seconds cooldown between camera detections (database check handles duplicates)
-TEST_MODE_ALWAYS_ACTIVE = False  # False = only mark during scheduled time, True = always mark
+TEST_MODE_ALWAYS_ACTIVE = os.getenv("TEST_MODE_ALWAYS_ACTIVE", "0") == "1"  # False = only mark during scheduled time, True = always mark
 PROCESS_EVERY_N_FRAMES = 30  # Process every 30 frames (~1 time/sec) - attendance needs persistence, not frequency
 FACE_EXTRACTION_INTERVAL = 10.0  # Cache face extraction for 10 seconds, reuse between frames (aggressive caching)
 MODE_CHECK_INTERVAL = 0.5  # seconds (increased frequency for instant mode detection)
@@ -93,6 +94,7 @@ TRACK_MIN_SECONDS = float(os.getenv("TRACK_MIN_SECONDS", "3.0"))
 TRACK_MIN_HITS = int(os.getenv("TRACK_MIN_HITS", "3"))
 TRACK_IOU_MATCH = float(os.getenv("TRACK_IOU_MATCH", "0.3"))
 TRACK_STALE_SECONDS = float(os.getenv("TRACK_STALE_SECONDS", "2.0"))
+UNTRACKED_MARK_ATTEMPT_COOLDOWN = float(os.getenv("UNTRACKED_MARK_ATTEMPT_COOLDOWN", "10.0"))
 LIVENESS_ENABLED = os.getenv("LIVENESS_ENABLED", "1") == "1"
 LIVENESS_WINDOW_SECONDS = float(os.getenv("LIVENESS_WINDOW_SECONDS", "3.0"))
 LIVENESS_MIN_MOVEMENT_PX = float(os.getenv("LIVENESS_MIN_MOVEMENT_PX", "8.0"))
@@ -115,6 +117,18 @@ def load_json_file(filepath):
 def load_from_data_dir(filename):
     """Load from data directory"""
     return load_json_file(os.path.join(DATA_DIR, filename))
+
+def normalize_api_list(payload):
+    """Normalize backend payloads into a list across common wrapper formats."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("value", "items", "data", "results"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+        return [payload]
+    return []
 
 # ============================================================================
 # STUDENT FACE DATABASE
@@ -171,7 +185,7 @@ class FaceDatabase:
         try:
             response = requests.get(f"{BACKEND_API}/students", timeout=5)
             if response.status_code == 200:
-                students_list = response.json()
+                students_list = normalize_api_list(response.json())
                 
                 # Convert list format to roll_number keyed format
                 for student in students_list:
@@ -192,6 +206,27 @@ class FaceDatabase:
         except Exception as e:
             logger.error(f"❌ Failed to fetch from MongoDB API: {e}")
             raise
+
+    def _to_float_embedding(self, embedding_data) -> Optional[np.ndarray]:
+        """Normalize embedding payload from API into a finite float32 numpy vector."""
+        if embedding_data is None:
+            return None
+
+        try:
+            parsed = embedding_data
+
+            # Some payloads store embeddings as JSON strings.
+            if isinstance(parsed, str):
+                parsed = json.loads(parsed)
+
+            vector = np.asarray(parsed, dtype=np.float32)
+            if vector.ndim != 1 or vector.size == 0:
+                return None
+            if not np.isfinite(vector).all():
+                return None
+            return vector
+        except Exception:
+            return None
 
 
     
@@ -343,6 +378,8 @@ class CameraAttendance:
         self.cached_face_results = []  # Cache extracted face results
         self.tracker = self._init_tracker()
         self.track_state = {}  # {track_id: {"embedding": ..., "marked": True, "student_roll": ...}}
+        self.last_schedule_signature = None  # Log active class only when it changes
+        self.last_untracked_mark_attempt = {}  # {roll_number: timestamp}
         
         # ✅ FIX: Warm up DeepFace model cache to avoid 3-10 sec delay on first use
         logger.info("🚀 Warming up DeepFace ArcFace model cache...")
@@ -370,6 +407,7 @@ class CameraAttendance:
         self.latest_result = None  # Latest AI result (used by display thread)
         self.ai_frame_buffer = None  # Buffer for frame to process
         self.ai_lock = threading.Lock()  # Thread-safe access to latest_result
+        self.ai_worker_running = False  # Prevent overlapping AI workers
 
     def _ai_worker_thread(self, frame, frame_count):
         """🔥 FIX 1: Background thread for AI processing
@@ -378,15 +416,18 @@ class CameraAttendance:
         AI runs async and updates self.latest_result.
         """
         try:
-            logger.info(f"🧠 AI worker thread started for frame {frame_count}")
+            logger.debug(f"🧠 AI worker thread started for frame {frame_count}")
             result = self.process_frame(frame)
             with self.ai_lock:
                 self.latest_result = result
-            logger.info(f"✅ AI result updated at frame {frame_count}: status={result.get('status')}")
+            logger.debug(f"✅ AI result updated at frame {frame_count}: status={result.get('status')}")
         except Exception as e:
             logger.error(f"❌ Error in AI worker thread: {e}")
             import traceback
             logger.error(traceback.format_exc())
+        finally:
+            with self.ai_lock:
+                self.ai_worker_running = False
 
     def get_camera_mode(self):
         """Fetch camera mode from backend with caching"""
@@ -1147,7 +1188,7 @@ class CameraAttendance:
                     logger.warning(f"Could not fetch timetable from backend: {response.status_code}")
                     return None
                 
-                timetable_data = response.json()
+                timetable_data = normalize_api_list(response.json())
                 logger.debug(f"📚 Fetched {len(timetable_data)} timetable entries")
             except requests.exceptions.RequestException as e:
                 logger.error(f"❌ Network error fetching timetable: {e}")
@@ -1165,9 +1206,7 @@ class CameraAttendance:
                     logger.warning(f"   Response: {response.text[:200]}")
                     return None
                 
-                camera_schedule = response.json()
-                if isinstance(camera_schedule, dict):
-                    camera_schedule = [camera_schedule]
+                camera_schedule = normalize_api_list(response.json())
                 
                 logger.debug(f"📅 Fetched {len(camera_schedule)} camera schedules")
             except requests.exceptions.RequestException as e:
@@ -1214,7 +1253,18 @@ class CameraAttendance:
                                         "start_time": start_time,
                                         "end_time": end_time
                                     }
-                                    logger.info(f"✅ Active class found: {tt.get('subject_id')} in {active_schedule['room']} ({start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')})")
+                                    signature = (
+                                        active_schedule.get("subject_id"),
+                                        active_schedule.get("room"),
+                                        start_time,
+                                        end_time,
+                                        require_exam
+                                    )
+                                    if signature != self.last_schedule_signature:
+                                        logger.info(f"✅ Active class found: {tt.get('subject_id')} in {active_schedule['room']} ({start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')})")
+                                        self.last_schedule_signature = signature
+                                    else:
+                                        logger.debug("Active class unchanged")
                                     return active_schedule
                                 else:
                                     logger.debug(f"      ⏭️ Outside time window: {current_time} not in {start_time}-{end_time}")
@@ -1230,6 +1280,18 @@ class CameraAttendance:
         if not self.last_schedule_log or (now - self.last_schedule_log).total_seconds() > 30:
             logger.warning(f"⏱️ No active class for {self.camera_name} at {datetime.now().strftime('%A %H:%M:%S')}")
             self.last_schedule_log = now
+
+        if TEST_MODE_ALWAYS_ACTIVE:
+            # Local fallback for testing when timetable/camera schedule data is unavailable.
+            fallback_schedule = {
+                "subject_id": "TEST_SUBJECT",
+                "teacher_id": "TEST_TEACHER",
+                "room": self.camera_name,
+                "start_time": time(0, 0),
+                "end_time": time(23, 59)
+            }
+            logger.warning("🧪 TEST_MODE_ALWAYS_ACTIVE=1 -> using fallback all-day schedule")
+            return fallback_schedule
         
         return None
         
@@ -1255,43 +1317,43 @@ class CameraAttendance:
             if self.last_face_extraction_time and cache_age < FACE_EXTRACTION_INTERVAL:
                 # Use cached face results from last extraction
                 faces = self.cached_face_results
-                logger.info(f"♻️ Using cached faces: {len(faces)} faces (cache age: {cache_age:.1f}s)")
+                logger.debug(f"♻️ Using cached faces: {len(faces)} faces (cache age: {cache_age:.1f}s)")
             else:
                 # Extract faces from frame
-                logger.info(f"🔍 Extracting faces from frame...")
+                logger.debug("🔍 Extracting faces from frame...")
                 faces = self._extract_faces(frame)
                 self.cached_face_results = faces
                 self.last_face_extraction_time = now
-                logger.info(f"✅ Extracted {len(faces)} face(s)")
+                logger.debug(f"✅ Extracted {len(faces)} face(s)")
             
             if not faces:
-                logger.info(f"⚠️ No faces detected in frame")
+                logger.debug("No faces detected in frame")
                 return []
 
             # Process each detected face
             recognized_students = []
-            logger.info(f"🔬 Processing {len(faces)} detected face(s)...")
+            logger.debug(f"🔬 Processing {len(faces)} detected face(s)...")
 
             for idx, face in enumerate(faces):
                 try:
-                    logger.info(f"   Processing face #{idx+1}...")
+                    logger.debug(f"   Processing face #{idx+1}...")
                     face_img = face.get("face")
                     if face_img is None:
                         logger.warning(f"   Face #{idx+1} has no image data")
                         continue
 
                     # ✅ FIX 2: Compute embedding once, reuse for tracking
-                    logger.info(f"   Computing embedding for face #{idx+1}...")
+                    logger.debug(f"   Computing embedding for face #{idx+1}...")
                     frame_embedding = self._compute_embedding(face_img)
                     
                     if frame_embedding is None:
                         logger.warning(f"   Failed to compute embedding for face #{idx+1}")
                         continue
                     
-                    logger.info(f"   ✅ Embedding computed (dim={len(frame_embedding)})")
+                    logger.debug(f"   ✅ Embedding computed (dim={len(frame_embedding)})")
                     
                     # ✅ FIX 3: Pinecone called only on NEW track_ids
-                    logger.info(f"   Searching best match for face #{idx+1}...")
+                    logger.debug(f"   Searching best match for face #{idx+1}...")
                     match = self._best_match_from_embedding(frame_embedding)
                     
                     face_x = face.get("x", 0)
@@ -1301,7 +1363,7 @@ class CameraAttendance:
                     confidence = face.get("confidence", 0.0)
 
                     if match and match.get("similarity", 0.0) >= SIMILARITY_THRESHOLD:
-                        logger.info(f"   ✅ Match found: {match.get('name')} (similarity={match.get('similarity'):.3f})")
+                        logger.debug(f"   ✅ Match found: {match.get('name')} (similarity={match.get('similarity'):.3f})")
                         match.update({
                             "face_x": face_x,
                             "face_y": face_y,
@@ -1312,7 +1374,7 @@ class CameraAttendance:
                         recognized_students.append(match)
                     else:
                         similarity = match.get("similarity", 0.0) if match else 0.0
-                        logger.warning(f"   ⚠️ No match or below threshold (similarity={similarity:.3f}, threshold={SIMILARITY_THRESHOLD})")
+                        logger.debug(f"   ⚠️ No match or below threshold (similarity={similarity:.3f}, threshold={SIMILARITY_THRESHOLD})")
                         recognized_students.append({
                             "roll_number": None,
                             "name": None,
@@ -1330,7 +1392,7 @@ class CameraAttendance:
                     logger.error(traceback.format_exc())
                     continue
             
-            logger.info(f"✅ Total recognized: {len(recognized_students)} students")
+            logger.debug(f"✅ Total recognized: {len(recognized_students)} students")
             return recognized_students
         
         except Exception as e:
@@ -1500,18 +1562,18 @@ class CameraAttendance:
     
     def process_frame(self, frame):
         """Process a single frame"""
-        logger.info(f"🎬 process_frame called (frame shape: {frame.shape})")
+        logger.debug(f"🎬 process_frame called (frame shape: {frame.shape})")
         
         mode = self.get_camera_mode()
-        logger.info(f"📸 Camera mode: {mode}")
+        logger.debug(f"📸 Camera mode: {mode}")
         
         schedule = self.get_current_schedule(require_exam=(mode == "EXAM"))
         
         if not schedule:
-            logger.warning(f"⚠️ No active schedule found")
+            logger.debug("No active schedule found for this frame")
             return {"status": "no_schedule", "mode": mode, "message": "No active class for this time slot"}
         
-        logger.info(f"📅 Active schedule: {schedule.get('subject_id')} ({schedule.get('start_time')}-{schedule.get('end_time')})")
+        logger.debug(f"📅 Active schedule: {schedule.get('subject_id')} ({schedule.get('start_time')}-{schedule.get('end_time')})")
 
         if mode == "EXAM":
             logger.info(f"📝 Processing as EXAM mode")
@@ -1520,7 +1582,7 @@ class CameraAttendance:
             return result
         
         # Detect faces
-        logger.info(f"👤 Detecting faces in frame...")
+        logger.debug("👤 Detecting faces in frame...")
         recognized = self.detect_faces_in_frame(frame)
         
         if recognized:
@@ -1549,6 +1611,26 @@ class CameraAttendance:
                         marked_students.append(marked)
 
                 self._prune_tracks()
+
+                # Fallback: if tracker did not yield a mark, still attempt attendance once per roll every few seconds.
+                if not marked_students:
+                    now = datetime.now()
+                    for student in recognized:
+                        roll_number = student.get("roll_number")
+                        if not roll_number:
+                            continue
+                        last_attempt = self.last_untracked_mark_attempt.get(roll_number)
+                        if last_attempt and (now - last_attempt).total_seconds() < UNTRACKED_MARK_ATTEMPT_COOLDOWN:
+                            continue
+
+                        self.last_untracked_mark_attempt[roll_number] = now
+                        marked = self.mark_attendance(
+                            roll_number,
+                            student.get("similarity", 0.0),
+                            schedule
+                        )
+                        if marked:
+                            marked_students.append(student)
             else:
                 # Mark attendance for ALL detected faces (fallback)
                 for student in recognized:
@@ -1645,12 +1727,21 @@ class CameraAttendance:
                 
                 # ✅ FIX 1: Process AI in background thread, NEVER block camera loop
                 if frame_count % PROCESS_EVERY_N_FRAMES == 0:
-                    # Start background AI worker (non-blocking)
-                    threading.Thread(
-                        target=self._ai_worker_thread,
-                        args=(frame.copy(), frame_count),
-                        daemon=True
-                    ).start()
+                    should_start_worker = False
+                    with self.ai_lock:
+                        if not self.ai_worker_running:
+                            self.ai_worker_running = True
+                            should_start_worker = True
+
+                    if should_start_worker:
+                        # Start background AI worker (non-blocking)
+                        threading.Thread(
+                            target=self._ai_worker_thread,
+                            args=(frame.copy(), frame_count),
+                            daemon=True
+                        ).start()
+                    else:
+                        logger.debug("Skipping AI frame: previous worker still running")
                 
                 # Flip frame for mirror effect
                 frame = cv2.flip(frame, 1)
@@ -1765,7 +1856,7 @@ class AttendanceScheduler:
         try:
             response = requests.get(f"{BACKEND_API}/cameras", timeout=5)
             if response.status_code == 200:
-                cameras_data = response.json()
+                cameras_data = normalize_api_list(response.json())
                 logger.info(f"✅ Loaded {len(cameras_data)} cameras from MongoDB")
                 return cameras_data
         except Exception as e:
