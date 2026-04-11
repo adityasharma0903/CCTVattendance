@@ -19,10 +19,6 @@ from dotenv import load_dotenv
 env_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(dotenv_path=env_path)
 
-try:
-    from pinecone import Pinecone
-except Exception as e:
-    Pinecone = None
 
 try:
     from deep_sort_realtime.deepsort_tracker import DeepSort
@@ -52,8 +48,8 @@ MODEL = "ArcFace"
 DETECTION_INTERVAL = 2.0
 ATTENDANCE_COOLDOWN = 30  # Seconds cooldown between camera detections (database check handles duplicates)
 TEST_MODE_ALWAYS_ACTIVE = os.getenv("TEST_MODE_ALWAYS_ACTIVE", "0") == "1"  # False = only mark during scheduled time, True = always mark
-PROCESS_EVERY_N_FRAMES = 30  # Process every 30 frames (~1 time/sec) - attendance needs persistence, not frequency
-FACE_EXTRACTION_INTERVAL = 10.0  # Cache face extraction for 10 seconds, reuse between frames (aggressive caching)
+PROCESS_EVERY_N_FRAMES = 15  # Process every 15 frames (~2 times/sec) - multi-face CCTV needs faster scanning
+FACE_EXTRACTION_INTERVAL = 2.0  # Cache face extraction for 2 seconds - re-detect new faces entering frame quickly
 MODE_CHECK_INTERVAL = 0.5  # seconds (increased frequency for instant mode detection)
 EXAM_DETECT_INTERVAL = 1  # seconds
 PHONE_CONSEC_FRAMES = 1  # Instant detection - alert on first frame phone detected
@@ -84,10 +80,6 @@ FACE_DETECTOR_FALLBACK = None  # ✅ FIX 5: NO fallback to MTCNN (prevents doubl
 FACE_DET_CONFIDENCE = float(os.getenv("FACE_DET_CONFIDENCE", "0.5"))
 FACE_DET_UPSCALE = float(os.getenv("FACE_DET_UPSCALE", "1.5"))
 MIN_FACE_SIZE = int(os.getenv("MIN_FACE_SIZE", "20"))
-PINECONE_ENABLED = os.getenv("PINECONE_ENABLED", "1") == "1"
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "face-recognition")
-PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east-1-aws")
 
 TRACKING_ENABLED = os.getenv("TRACKING_ENABLED", "1") == "1"
 TRACK_MIN_SECONDS = float(os.getenv("TRACK_MIN_SECONDS", "3.0"))
@@ -138,47 +130,7 @@ class FaceDatabase:
     def __init__(self):
         self.students = {}
         self.embeddings = {}
-        self.pinecone_index = None
-        self.pinecone_client = None
-        self._init_pinecone()
         self.load_students()
-
-    def _init_pinecone(self):
-        """Initialize Pinecone client and connect to index (Pinecone 3.x API)"""
-        if not PINECONE_ENABLED or Pinecone is None or not PINECONE_API_KEY:
-            logger.info("⚠️ Pinecone not enabled or API key missing")
-            self.pinecone_client = None
-            self.pinecone_index = None
-            return
-
-        try:
-            # Initialize Pinecone with new 3.x API
-            self.pinecone_client = Pinecone(api_key=PINECONE_API_KEY)
-            logger.info("✅ Pinecone client created")
-
-            # Check if index exists
-            indexes = self.pinecone_client.list_indexes()
-            index_names = [idx.name for idx in indexes.indexes] if hasattr(indexes, 'indexes') else []
-            
-            if PINECONE_INDEX_NAME not in index_names:
-                logger.warning(f"⚠️ Pinecone index '{PINECONE_INDEX_NAME}' not found. Please create it manually in Pinecone console:")
-                logger.warning(f"   - Index name: {PINECONE_INDEX_NAME}")
-                logger.warning(f"   - Dimensions: 512")
-                logger.warning(f"   - Metric: cosine")
-                logger.warning(f"   - Region: us-east-1 (AWS)")
-                self.pinecone_client = None
-                self.pinecone_index = None
-                return
-            else:
-                logger.info(f"✅ Found existing Pinecone index: {PINECONE_INDEX_NAME}")
-
-            # Connect to existing index
-            self.pinecone_index = self.pinecone_client.Index(PINECONE_INDEX_NAME)
-            logger.info(f"✅ Pinecone initialized successfully")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Pinecone: {e}")
-            self.pinecone_client = None
-            self.pinecone_index = None
 
     def load_students(self):
         """Load student embeddings from MongoDB via backend API (PRIMARY SOURCE)"""
@@ -201,7 +153,7 @@ class FaceDatabase:
                             else:
                                 logger.warning(f"Could not process embedding for {roll}: invalid numeric values")
                 
-                logger.info(f"✅ Loaded {len(self.students)} students from MongoDB")
+                logger.info(f"✅ Loaded {len(self.students)} students ({len(self.embeddings)} with embeddings) from MongoDB")
                 return
         except Exception as e:
             logger.error(f"❌ Failed to fetch from MongoDB API: {e}")
@@ -228,8 +180,6 @@ class FaceDatabase:
         except Exception:
             return None
 
-
-    
     def get_student_by_roll(self, roll_number):
         """Get student info by roll number"""
         return self.students.get(roll_number)
@@ -238,82 +188,56 @@ class FaceDatabase:
         """Get all student embeddings"""
         return self.embeddings
 
-    def push_embedding_to_pinecone(self, roll_number: str, embedding: np.ndarray) -> bool:
-        """Push single embedding to Pinecone"""
-        if self.pinecone_index is None:
-            return False
-
-        try:
-            embedding_list = embedding.astype("float32").tolist()
-            self.pinecone_index.upsert(
-                vectors=[(roll_number, embedding_list)],
-                namespace="face-recognition"
-            )
-            return True
-        except Exception as e:
-            logger.error(f"❌ Failed to push embedding to Pinecone for {roll_number}: {e}")
-            return False
-
-    def delete_embedding_from_pinecone(self, roll_number: str) -> bool:
-        """Delete embedding from Pinecone"""
-        if self.pinecone_index is None:
-            return False
-
-        try:
-            self.pinecone_index.delete(ids=[roll_number], namespace="face-recognition")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Failed to delete embedding from Pinecone for {roll_number}: {e}")
-            return False
-
     def search_best(self, embedding: np.ndarray) -> Optional[Dict]:
-        """Search best matching student using Pinecone (fallback to local embeddings)"""
-        if self.pinecone_index is not None:
-            try:
-                import time
-                query_embedding = embedding.astype("float32").tolist()
-                logger.info(f"🔍 Searching Pinecone with embedding vector (dim={len(query_embedding)})")
+        """Search best matching student using MongoDB Vector Search API.
+        
+        Calls the backend /api/vector-search endpoint which uses
+        MongoDB Atlas $vectorSearch for fast ANN search.
+        Falls back to local cosine similarity if the API fails.
+        """
+        # Try MongoDB Vector Search via backend API
+        try:
+            import time as _time
+            query_embedding = embedding.astype("float32").tolist()
+            
+            start_time = _time.time()
+            response = requests.post(
+                f"{BACKEND_API}/vector-search",
+                json={"embedding": query_embedding, "top_k": 1},
+                timeout=5
+            )
+            elapsed = _time.time() - start_time
+            
+            if response.status_code == 200:
+                data = response.json()
+                matches = data.get("matches", [])
+                source = data.get("source", "unknown")
                 
-                start_time = time.time()
-                logger.info(f"⏳ About to call pinecone_index.query()...")
-                
-                # Pinecone 3.x API query syntax
-                results = self.pinecone_index.query(
-                    vector=query_embedding,
-                    top_k=1,
-                    include_metadata=True
-                )
-                
-                logger.info(f"✅ pinecone_index.query() returned!")
-                elapsed = time.time() - start_time
-                
-                logger.info(f"📊 Pinecone query took {elapsed:.2f}s")
-                logger.info(f"📊 Pinecone response type: {type(results)}")
-                logger.info(f"📊 Has matches attr: {hasattr(results, 'matches')}")
+                if matches:
+                    match = matches[0]
+                    roll_number = match.get("roll_number")
+                    similarity = float(match.get("similarity", 0.0))
+                    name = match.get("name")
+                    
+                    logger.info(f"🔍 [{source}] Match: {name} (similarity={similarity:.3f}) in {elapsed:.2f}s")
+                    return {
+                        "roll_number": roll_number,
+                        "name": name,
+                        "similarity": similarity
+                    }
+                else:
+                    logger.debug(f"Vector search returned no matches ({elapsed:.2f}s)")
+                    return None
+            else:
+                logger.warning(f"⚠️ Vector search API returned {response.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️ Vector search API failed: {e}, falling back to local search")
 
-                # Parse Pinecone 3.x response format
-                if hasattr(results, 'matches') and results.matches and len(results.matches) > 0:
-                    match = results.matches[0]
-                    roll_number = match.id
-                    similarity = float(match.score)
-                    student = self.get_student_by_roll(roll_number)
+        # Fallback: local cosine similarity
+        return self._local_search_best(embedding)
 
-                    if student:
-                        logger.info(f"✅ Pinecone match: {student.get('name')} (similarity: {similarity:.3f})")
-                        return {
-                            "roll_number": roll_number,
-                            "name": student.get("name"),
-                            "similarity": similarity
-                        }
-                    else:
-                        logger.warning(f"⚠️ Pinecone returned ID {roll_number} but student not found in memory")
-                        return None
-                        
-                logger.warning(f"⚠️ Pinecone returned no matches")
-                return None
-            except Exception as e:
-                logger.warning(f"⚠️ Pinecone search failed: {type(e).__name__}: {e}, falling back to local search")
-
+    def _local_search_best(self, embedding: np.ndarray) -> Optional[Dict]:
+        """Fallback local cosine similarity search against cached embeddings."""
         if not self.embeddings:
             return None
 
@@ -347,6 +271,30 @@ class FaceDatabase:
             "name": student.get("name"),
             "similarity": float(best_similarity)
         }
+
+    def search_best_batch(self, embeddings: list) -> list:
+        """Search best matching students for MULTIPLE embeddings at once.
+        
+        Used for CCTV multi-face recognition - processes all faces.
+        Uses MongoDB Vector Search API for each face, with local fallback.
+        
+        Args:
+            embeddings: List of (face_index, np.ndarray) tuples
+            
+        Returns:
+            List of (face_index, match_dict_or_None) tuples
+        """
+        results = []
+        
+        if not embeddings:
+            return results
+        
+        # Try each face against MongoDB Vector Search API
+        for face_idx, embedding in embeddings:
+            match = self.search_best(embedding)
+            results.append((face_idx, match))
+        
+        return results
 
 # ============================================================================
 # CAMERA ATTENDANCE
@@ -948,47 +896,20 @@ class CameraAttendance:
         if embedding is None:
             return None
 
-        # Try Pinecone first
-        pinecone_match = self.face_db.search_best(embedding)
-        if pinecone_match:
-            similarity = pinecone_match.get("similarity", 0)
-            logger.info(f"📍 Pinecone result: {pinecone_match.get('name')} (similarity={similarity:.3f}, threshold={SIMILARITY_THRESHOLD})")
+        # Use MongoDB Vector Search via backend API (with local fallback)
+        match = self.face_db.search_best(embedding)
+        if match:
+            similarity = match.get("similarity", 0)
+            logger.info(f"📍 Match: {match.get('name')} (similarity={similarity:.3f}, threshold={SIMILARITY_THRESHOLD})")
             if similarity >= SIMILARITY_THRESHOLD:
                 logger.info(f"✅ Match passes threshold!")
-                return pinecone_match
+                return match
             else:
                 logger.warning(f"⚠️ Match below threshold ({similarity:.3f} < {SIMILARITY_THRESHOLD})")
                 return None
 
-        # Fallback to local embeddings
-        logger.info(f"📂 Pinecone empty, trying local embeddings...")
-        best_similarity = -1.0
-        best_roll = None
-        for roll_number, student_embedding in self.face_db.get_all_embeddings().items():
-            similarity = np.dot(embedding, student_embedding) / (
-                np.linalg.norm(embedding) * np.linalg.norm(student_embedding)
-            )
-            if similarity > best_similarity:
-                best_similarity = similarity
-                best_roll = roll_number
-
-        if best_roll is None:
-            logger.warning(f"❌ No match found in local embeddings")
-            return None
-
-        student = self.face_db.get_student_by_roll(best_roll)
-        logger.info(f"📍 Local match: {student.get('name')} (similarity={best_similarity:.3f}, threshold={SIMILARITY_THRESHOLD})")
-        
-        if best_similarity >= SIMILARITY_THRESHOLD:
-            logger.info(f"✅ Local match passes threshold!")
-            return {
-                "roll_number": best_roll,
-                "name": student.get("name") if student else None,
-                "similarity": float(best_similarity)
-            }
-        else:
-            logger.warning(f"⚠️ Local match below threshold ({best_similarity:.3f} < {SIMILARITY_THRESHOLD})")
-            return None
+        logger.debug("No match found")
+        return None
 
     def _iou(self, box_a, box_b):
         ax1, ay1, ax2, ay2 = box_a
@@ -1300,7 +1221,13 @@ class CameraAttendance:
         return None
     
     def detect_faces_in_frame(self, frame):
-        """Detect and recognize ALL faces in frame - with caching for performance"""
+        """Detect and recognize ALL faces in frame simultaneously.
+        
+        CCTV Multi-Face Mode: Detects every face in the frame independently,
+        computes embeddings for each, matches each against the database,
+        and returns per-face recognition results. This enables simultaneous
+        attendance marking for an entire classroom.
+        """
         try:
             
             # Get all student embeddings
@@ -1310,7 +1237,7 @@ class CameraAttendance:
                 logger.warning("❌ No student embeddings in database")
                 return []
             
-            # ✅ FIX 1: Cache face extraction - only extract every 2 seconds, reuse in between
+            # Cache face extraction - re-extract every FACE_EXTRACTION_INTERVAL seconds
             now = datetime.now()
             cache_age = (now - self.last_face_extraction_time).total_seconds() if self.last_face_extraction_time else 999
             
@@ -1320,79 +1247,132 @@ class CameraAttendance:
                 logger.debug(f"♻️ Using cached faces: {len(faces)} faces (cache age: {cache_age:.1f}s)")
             else:
                 # Extract faces from frame
-                logger.debug("🔍 Extracting faces from frame...")
+                logger.debug("🔍 Extracting ALL faces from frame (multi-face CCTV mode)...")
                 faces = self._extract_faces(frame)
                 self.cached_face_results = faces
                 self.last_face_extraction_time = now
-                logger.debug(f"✅ Extracted {len(faces)} face(s)")
+                logger.info(f"👥 Extracted {len(faces)} face(s) from CCTV frame")
             
             if not faces:
                 logger.debug("No faces detected in frame")
                 return []
 
-            # Process each detected face
-            recognized_students = []
-            logger.debug(f"🔬 Processing {len(faces)} detected face(s)...")
-
+            # ======== MULTI-FACE PIPELINE ========
+            # Step 1: Compute embeddings for ALL detected faces
+            face_embeddings = []  # List of (face_index, embedding)
+            face_metadata = []    # Parallel list of face coordinates
+            
+            logger.info(f"🔬 Computing embeddings for {len(faces)} face(s) simultaneously...")
+            
             for idx, face in enumerate(faces):
                 try:
-                    logger.debug(f"   Processing face #{idx+1}...")
                     face_img = face.get("face")
                     if face_img is None:
                         logger.warning(f"   Face #{idx+1} has no image data")
                         continue
 
-                    # ✅ FIX 2: Compute embedding once, reuse for tracking
-                    logger.debug(f"   Computing embedding for face #{idx+1}...")
                     frame_embedding = self._compute_embedding(face_img)
                     
                     if frame_embedding is None:
                         logger.warning(f"   Failed to compute embedding for face #{idx+1}")
                         continue
                     
-                    logger.debug(f"   ✅ Embedding computed (dim={len(frame_embedding)})")
+                    face_embeddings.append((idx, frame_embedding))
+                    face_metadata.append({
+                        "idx": idx,
+                        "face_x": face.get("x", 0),
+                        "face_y": face.get("y", 0),
+                        "face_w": face.get("w", 0),
+                        "face_h": face.get("h", 0),
+                        "confidence": float(face.get("confidence", 0.0))
+                    })
+                except Exception as e:
+                    logger.error(f"❌ Error computing embedding for face #{idx+1}: {e}")
+                    continue
+            
+            if not face_embeddings:
+                logger.debug("No valid face embeddings computed")
+                return []
+            
+            # Step 2: Batch-match ALL embeddings against database
+            logger.info(f"🔎 Batch-matching {len(face_embeddings)} face(s) against student database...")
+            batch_results = self.face_db.search_best_batch(face_embeddings)
+            
+            # Step 3: Build per-face results with deduplication
+            # If two faces match the same student, keep the one with higher similarity
+            recognized_students = []
+            seen_rolls = {}  # {roll_number: index_in_recognized_students}
+            
+            for face_idx, match in batch_results:
+                # Find corresponding metadata
+                meta = None
+                for m in face_metadata:
+                    if m["idx"] == face_idx:
+                        meta = m
+                        break
+                
+                if meta is None:
+                    continue
+                
+                if match and match.get("similarity", 0.0) >= SIMILARITY_THRESHOLD:
+                    roll = match.get("roll_number")
+                    similarity = match.get("similarity", 0.0)
                     
-                    # ✅ FIX 3: Pinecone called only on NEW track_ids
-                    logger.debug(f"   Searching best match for face #{idx+1}...")
-                    match = self._best_match_from_embedding(frame_embedding)
-                    
-                    face_x = face.get("x", 0)
-                    face_y = face.get("y", 0)
-                    face_w = face.get("w", 0)
-                    face_h = face.get("h", 0)
-                    confidence = face.get("confidence", 0.0)
-
-                    if match and match.get("similarity", 0.0) >= SIMILARITY_THRESHOLD:
-                        logger.debug(f"   ✅ Match found: {match.get('name')} (similarity={match.get('similarity'):.3f})")
-                        match.update({
-                            "face_x": face_x,
-                            "face_y": face_y,
-                            "face_w": face_w,
-                            "face_h": face_h,
-                            "confidence": float(confidence)
-                        })
-                        recognized_students.append(match)
-                    else:
-                        similarity = match.get("similarity", 0.0) if match else 0.0
-                        logger.debug(f"   ⚠️ No match or below threshold (similarity={similarity:.3f}, threshold={SIMILARITY_THRESHOLD})")
+                    # Deduplication: if same student matched by two faces, keep higher similarity
+                    if roll in seen_rolls:
+                        existing_idx = seen_rolls[roll]
+                        if similarity > recognized_students[existing_idx].get("similarity", 0.0):
+                            # Replace with better match
+                            recognized_students[existing_idx] = {
+                                "roll_number": roll,
+                                "name": match.get("name"),
+                                "similarity": similarity,
+                                "face_x": meta["face_x"],
+                                "face_y": meta["face_y"],
+                                "face_w": meta["face_w"],
+                                "face_h": meta["face_h"],
+                                "confidence": meta["confidence"]
+                            }
+                        # Add unknown entry for the duplicate face
                         recognized_students.append({
                             "roll_number": None,
                             "name": None,
                             "similarity": 0.0,
-                            "face_x": face_x,
-                            "face_y": face_y,
-                            "face_w": face_w,
-                            "face_h": face_h,
-                            "confidence": float(confidence)
+                            "face_x": meta["face_x"] if similarity <= recognized_students[seen_rolls[roll]].get("similarity", 0.0) else recognized_students[seen_rolls[roll]].get("face_x", 0),
+                            "face_y": meta["face_y"] if similarity <= recognized_students[seen_rolls[roll]].get("similarity", 0.0) else recognized_students[seen_rolls[roll]].get("face_y", 0),
+                            "face_w": meta["face_w"] if similarity <= recognized_students[seen_rolls[roll]].get("similarity", 0.0) else recognized_students[seen_rolls[roll]].get("face_w", 0),
+                            "face_h": meta["face_h"] if similarity <= recognized_students[seen_rolls[roll]].get("similarity", 0.0) else recognized_students[seen_rolls[roll]].get("face_h", 0),
+                            "confidence": meta["confidence"]
                         })
-                
-                except Exception as e:
-                    logger.error(f"❌ Error processing face #{idx+1}: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-                    continue
+                    else:
+                        seen_rolls[roll] = len(recognized_students)
+                        logger.info(f"   ✅ Face #{face_idx+1} → {match.get('name')} (similarity={similarity:.3f})")
+                        recognized_students.append({
+                            "roll_number": roll,
+                            "name": match.get("name"),
+                            "similarity": similarity,
+                            "face_x": meta["face_x"],
+                            "face_y": meta["face_y"],
+                            "face_w": meta["face_w"],
+                            "face_h": meta["face_h"],
+                            "confidence": meta["confidence"]
+                        })
+                else:
+                    similarity = match.get("similarity", 0.0) if match else 0.0
+                    logger.debug(f"   ⚠️ Face #{face_idx+1}: no match (similarity={similarity:.3f})")
+                    recognized_students.append({
+                        "roll_number": None,
+                        "name": None,
+                        "similarity": 0.0,
+                        "face_x": meta["face_x"],
+                        "face_y": meta["face_y"],
+                        "face_w": meta["face_w"],
+                        "face_h": meta["face_h"],
+                        "confidence": meta["confidence"]
+                    })
             
-            logger.debug(f"✅ Total recognized: {len(recognized_students)} students")
+            identified_count = sum(1 for s in recognized_students if s.get("roll_number"))
+            logger.info(f"👥 Multi-face result: {identified_count}/{len(recognized_students)} identified")
             return recognized_students
         
         except Exception as e:
@@ -1402,7 +1382,12 @@ class CameraAttendance:
             return []
     
     def draw_faces_on_frame(self, frame, recognized_students):
-        """Draw green rectangle and name for each recognized face"""
+        """Draw rectangle and name for EACH recognized face independently.
+        
+        - Green box + name for recognized students
+        - Red box + 'Unknown' for unrecognized faces
+        - Each face gets its own label with similarity score
+        """
         if not recognized_students:
             return frame
         
@@ -1415,35 +1400,44 @@ class CameraAttendance:
             w = int(student.get("face_w", 100))
             h = int(student.get("face_h", 100))
             
-            logger.debug(f"   Drawing box at x={x}, y={y}, w={w}, h={h}")
+            # Determine colors based on recognition status
+            is_recognized = student.get("roll_number") is not None
             
-            # Draw thin green rectangle around face
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
+            if is_recognized:
+                # Green for recognized students
+                box_color = (0, 255, 0)
+                bg_color = (0, 255, 0)
+                text_color = (0, 0, 0)
+                name = student.get("name", "Unknown")
+                similarity = student.get("similarity", 0)
+                text = f"{name} ({similarity:.2f})"
+            else:
+                # Red for unknown faces
+                box_color = (0, 0, 255)
+                bg_color = (0, 0, 255)
+                text_color = (255, 255, 255)
+                text = "Unknown"
             
-            # Prepare name text
-            name = student.get("name", "Unknown")
-            similarity = student.get("similarity", 0)
-            text = f"{name} ({similarity:.2f})"
+            # Draw rectangle around face (thickness=2 for visibility)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, 2)
             
-            # Draw background for text
+            # Draw label background and text
             font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.7
+            font_scale = 0.6
             thickness = 2
             text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
             text_x = x
             text_y = y - 10 if y > 30 else y + h + 25
             
-            # Draw green background rectangle for text
+            # Draw background rectangle for text
             cv2.rectangle(frame, 
                          (text_x, text_y - text_size[1] - 8),
                          (text_x + text_size[0] + 8, text_y + 5),
-                         (0, 255, 0), -1)
+                         bg_color, -1)
             
-            # Draw text on frame (black text on green background)
+            # Draw text on frame
             cv2.putText(frame, text, (text_x + 4, text_y - 2),
-                       font, font_scale, (0, 0, 0), thickness)
-            
-            logger.debug(f"   Drew: {name} at box")
+                       font, font_scale, text_color, thickness)
         
         return frame
     
@@ -1590,7 +1584,9 @@ class CameraAttendance:
             self.last_detected_faces = recognized
             self.face_cache_time = datetime.now()
             
-            logger.info(f"🔎 Detected {len(recognized)} face(s) in frame")
+            identified = [s for s in recognized if s.get("roll_number")]
+            logger.info(f"👥 CCTV Multi-Face: {len(recognized)} face(s) detected, {len(identified)} identified")
+            
             marked_students = []
 
             if self.tracker:
@@ -1612,31 +1608,34 @@ class CameraAttendance:
 
                 self._prune_tracks()
 
-                # Fallback: if tracker did not yield a mark, still attempt attendance once per roll every few seconds.
-                if not marked_students:
-                    now = datetime.now()
-                    for student in recognized:
-                        roll_number = student.get("roll_number")
-                        if not roll_number:
-                            continue
-                        last_attempt = self.last_untracked_mark_attempt.get(roll_number)
-                        if last_attempt and (now - last_attempt).total_seconds() < UNTRACKED_MARK_ATTEMPT_COOLDOWN:
-                            continue
+                # Fallback: for ALL identified faces not yet marked via tracker,
+                # attempt attendance independently per roll_number
+                now = datetime.now()
+                tracked_rolls = set(m.get("roll_number") for m in marked_students if m.get("roll_number"))
+                for student in recognized:
+                    roll_number = student.get("roll_number")
+                    if not roll_number:
+                        continue
+                    if roll_number in tracked_rolls:
+                        continue  # Already marked via tracker
+                    last_attempt = self.last_untracked_mark_attempt.get(roll_number)
+                    if last_attempt and (now - last_attempt).total_seconds() < UNTRACKED_MARK_ATTEMPT_COOLDOWN:
+                        continue
 
-                        self.last_untracked_mark_attempt[roll_number] = now
-                        marked = self.mark_attendance(
-                            roll_number,
-                            student.get("similarity", 0.0),
-                            schedule
-                        )
-                        if marked:
-                            marked_students.append(student)
+                    self.last_untracked_mark_attempt[roll_number] = now
+                    marked = self.mark_attendance(
+                        roll_number,
+                        student.get("similarity", 0.0),
+                        schedule
+                    )
+                    if marked:
+                        marked_students.append(student)
             else:
-                # Mark attendance for ALL detected faces (fallback)
+                # No tracker: mark attendance for ALL identified faces independently
                 for student in recognized:
                     if not student.get("roll_number"):
                         continue
-                    logger.info(f"   -> {student['name']} (similarity: {student['similarity']:.2f})")
+                    logger.info(f"   → {student['name']} (similarity: {student['similarity']:.2f})")
                     marked = self.mark_attendance(
                         student["roll_number"],
                         student["similarity"],
@@ -1645,8 +1644,10 @@ class CameraAttendance:
                     if marked:
                         marked_students.append(student)
             
-            # Return marked students and all recognized faces
+            # Return marked students and ALL recognized faces (for multi-face display)
             if marked_students:
+                names = ", ".join([m.get("name", "?") for m in marked_students])
+                logger.info(f"✅ Attendance marked for {len(marked_students)} student(s): {names}")
                 return {"status": "marked", "marked": marked_students, "recognized": recognized, "mode": mode}
             else:
                 return {"status": "recognized", "recognized": recognized, "mode": mode}
@@ -1785,14 +1786,17 @@ class CameraAttendance:
                     
                     if status == "marked":
                         marked = detection_result.get("marked", [])
+                        total_faces = len(detection_result.get("recognized", []))
                         if marked:
                             names = ", ".join([m.get("name", "Unknown") for m in marked])
-                            cv2.putText(frame, f"✅ MARKED: {names}", (10, 140),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 3)
+                            cv2.putText(frame, f"Marked {len(marked)}/{total_faces}: {names}", (10, 140),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                         last_detection = datetime.now()
                     elif status == "recognized":
-                        count = len(detection_result.get("recognized", []))
-                        cv2.putText(frame, f"🔎 Detected {count} face(s)", (10, 140),
+                        recognized_list = detection_result.get("recognized", [])
+                        total = len(recognized_list)
+                        identified = sum(1 for s in recognized_list if s.get("roll_number"))
+                        cv2.putText(frame, f"Faces: {total} | Identified: {identified}", (10, 140),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                     elif status == "no_schedule":
                         message = detection_result.get("message", "No active class for this time slot")
@@ -1908,12 +1912,18 @@ class AttendanceScheduler:
         logger.warning("   🔄 YOLO (phone detection) - already cached")
         logger.warning("   ✅ All models ready (embedded during import)")
         
-        # Step 3: Initialize Pinecone
-        logger.warning("🔌 Step 3: Initializing Pinecone Vector Database...")
+        # Step 3: Vector Search
+        logger.warning("🔌 Step 3: Initializing MongoDB Vector Search...")
         try:
-            logger.warning("   ✅ Pinecone connected: face-recognition index")
-        except:
-            logger.warning("   ⚠️  Pinecone connection will be retried")
+            response = requests.post(f"{BACKEND_API}/vector-search", 
+                                     json={"embedding": [0.0]*512, "top_k": 1}, timeout=5)
+            if response.status_code == 200:
+                source = response.json().get("source", "unknown")
+                logger.warning(f"   ✅ MongoDB Vector Search ready (source: {source})")
+            else:
+                logger.warning(f"   ⚠️  Vector search returned {response.status_code}, will use local fallback")
+        except Exception as e:
+            logger.warning(f"   ⚠️  Vector search test failed: {e}, will use local fallback")
         
         # Step 4: Start cameras
         logger.warning("📹 Step 4: Starting camera streams...")
@@ -1927,15 +1937,14 @@ class AttendanceScheduler:
         
         # ✅ System fully ready
         logger.warning("=" * 70)
-        logger.warning("🟢 SYSTEM FULLY INITIALIZED AND READY FOR EXAM MONITORING")
+        logger.warning("🟢 SYSTEM FULLY INITIALIZED AND READY")
         logger.warning("=" * 70)
-        logger.warning("✅ FaceID and Attendance Detection: ACTIVE")
-        logger.warning("✅ Pinecone Vector DB: CONNECTED")
-        logger.warning("✅ ArcFace Model: CACHED & READY (0.2-0.3s per face)")
-        logger.warning("✅ YOLO Phone Detection: READY (0.15 sensitivity - detects any phone part)")
-        logger.warning("✅ Exam Alert System: ACTIVE (instant alerts when phone detected)")
+        logger.warning("✅ FaceID & Multi-Face Attendance: ACTIVE")
+        logger.warning("✅ MongoDB Vector Search: ENABLED (fast face matching)")
+        logger.warning("✅ ArcFace Model: CACHED & READY")
+        logger.warning("✅ YOLO Phone Detection: READY")
+        logger.warning("✅ Exam Alert System: ACTIVE")
         logger.warning("=" * 70)
-        logger.warning("System is ready. Show a phone to the camera to test detection!")
     
     def stop(self):
         """Stop the scheduler"""

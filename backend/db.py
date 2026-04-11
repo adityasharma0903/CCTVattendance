@@ -93,6 +93,62 @@ class MongoDatabase:
                 except Exception as e:
                     logger.warning(f"Could not create index {index} on {collection_name}: {e}")
             logger.info(f"✅ Initialized collection: {collection_name}")
+        
+        # Ensure MongoDB Atlas Vector Search index exists
+        self._ensure_vector_search_index()
+    
+    def _ensure_vector_search_index(self):
+        """Create MongoDB Atlas Vector Search index on students.embedding if not exists.
+        
+        NOTE: Atlas Vector Search indexes must be created via Atlas UI or Atlas Admin API
+        for M10+ clusters. For M0/M2/M5 (free/shared), use Atlas UI.
+        This method logs instructions if the index doesn't exist yet.
+        """
+        try:
+            # Check if vector search index already exists by trying a dummy search
+            # If it fails, we know the index needs to be created
+            collection = self.db["students"]
+            try:
+                # Try a simple vector search to check if index exists
+                pipeline = [
+                    {
+                        "$vectorSearch": {
+                            "index": "face_embedding_index",
+                            "path": "embedding",
+                            "queryVector": [0.0] * 512,  # ArcFace produces 512-dim vectors
+                            "numCandidates": 1,
+                            "limit": 1
+                        }
+                    }
+                ]
+                list(collection.aggregate(pipeline))
+                logger.info("✅ MongoDB Atlas Vector Search index 'face_embedding_index' is active")
+            except Exception as e:
+                error_str = str(e)
+                if "PlanExecutor" in error_str or "vectorSearch" in error_str or "index not found" in error_str.lower():
+                    logger.warning("="*70)
+                    logger.warning("⚠️  MongoDB Atlas Vector Search index NOT found!")
+                    logger.warning("   Please create it in Atlas UI:")
+                    logger.warning("   1. Go to MongoDB Atlas → your cluster → 'Atlas Search'")
+                    logger.warning("   2. Click 'Create Search Index' → 'JSON Editor'")
+                    logger.warning("   3. Select database: CCTV, collection: students")
+                    logger.warning("   4. Index name: face_embedding_index")
+                    logger.warning("   5. Paste this JSON definition:")
+                    logger.warning("""   {
+     "fields": [{
+       "type": "vector",
+       "path": "embedding",
+       "numDimensions": 512,
+       "similarity": "cosine"
+     }]
+   }""")
+                    logger.warning("   6. Click 'Create Search Index'")
+                    logger.warning("   Vector search will fall back to local cosine until index is created.")
+                    logger.warning("="*70)
+                else:
+                    logger.debug(f"Vector search index check: {e}")
+        except Exception as e:
+            logger.debug(f"Could not check vector search index: {e}")
     
     def close(self):
         """Close MongoDB connection"""
@@ -169,6 +225,53 @@ def update_student(roll_number: str, student_data: Dict) -> bool:
         {"$set": student_data}
     )
     return result.modified_count > 0
+
+def vector_search_face(query_embedding: list, top_k: int = 5) -> list:
+    """Search for matching faces using MongoDB Atlas Vector Search.
+    
+    Uses the $vectorSearch aggregation stage for fast ANN (approximate nearest neighbor)
+    search on the students collection's embedding field.
+    
+    Args:
+        query_embedding: 512-dimensional face embedding vector
+        top_k: Number of top matches to return
+        
+    Returns:
+        List of dicts with roll_number, name, similarity score
+    """
+    db_inst = get_db()
+    collection = db_inst.db["students"]
+    
+    try:
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": "face_embedding_index",
+                    "path": "embedding",
+                    "queryVector": query_embedding,
+                    "numCandidates": max(top_k * 10, 100),
+                    "limit": top_k
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "roll_number": 1,
+                    "name": 1,
+                    "batch_id": 1,
+                    "score": {"$meta": "vectorSearchScore"}
+                }
+            }
+        ]
+        
+        results = list(collection.aggregate(pipeline))
+        logger.info(f"🔍 MongoDB Vector Search returned {len(results)} result(s)")
+        return results
+    except Exception as e:
+        logger.warning(f"⚠️ MongoDB Vector Search failed: {e}")
+        logger.warning("   Falling back to local cosine search. Create Atlas Vector Search index for faster results.")
+        return []
+
 
 def delete_student(roll_number: str) -> bool:
     """Delete a student"""

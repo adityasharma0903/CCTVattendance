@@ -12,11 +12,6 @@ import numpy as np
 from io import BytesIO
 from deepface import DeepFace
 
-# Pinecone imports
-try:
-    import pinecone
-except Exception:
-    pinecone = None
 
 # Import Cloudinary utilities
 from cloudinary_utils import (
@@ -54,43 +49,6 @@ app.add_middleware(
 # Data directory
 DATA_DIR = "../data"
 FACE_ENROLL_DETECTOR_BACKEND = os.getenv("FACE_ENROLL_DETECTOR_BACKEND", "retinaface")
-
-# ============================================================================
-# PINECONE CONFIGURATION
-# ============================================================================
-PINECONE_ENABLED = os.getenv("PINECONE_ENABLED", "1") == "1"
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "face-recognition")
-PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east-1-aws")
-
-def init_pinecone():
-    """Initialize Pinecone for vector search"""
-    if not PINECONE_ENABLED or pinecone is None or not PINECONE_API_KEY:
-        logger.warning("⚠️ Pinecone not enabled or API key missing")
-        return None
-
-    try:
-        pinecone.init(
-            api_key=PINECONE_API_KEY,
-            environment=PINECONE_ENVIRONMENT
-        )
-
-        if PINECONE_INDEX_NAME not in pinecone.list_indexes():
-            logger.info(f"📝 Creating Pinecone index: {PINECONE_INDEX_NAME}")
-            pinecone.create_index(
-                name=PINECONE_INDEX_NAME,
-                dimension=512,
-                metric="cosine"
-            )
-
-        pc_index = pinecone.Index(PINECONE_INDEX_NAME)
-        logger.info(f"✅ Pinecone initialized: {PINECONE_INDEX_NAME}")
-        return pc_index
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize Pinecone: {e}")
-        return None
-
-pinecone_index = init_pinecone()
 
 
 
@@ -506,12 +464,6 @@ async def upload_student_images_endpoint(
             if old_public_id:
                 delete_student_image(old_public_id)
 
-            if pinecone_index is not None:
-                try:
-                    pinecone_index.delete(ids=[roll_number], namespace="face-recognition")
-                    logger.info(f"✅ Deleted old Pinecone embedding for {roll_number}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to delete old Pinecone embedding: {e}")
 
         student_data = {
             "student_id": student_id,
@@ -534,17 +486,6 @@ async def upload_student_images_endpoint(
         else:
             db.add_student(student_data)
             logger.info(f"✅ Student {name} added to MongoDB with multi-image embeddings")
-
-        if pinecone_index is not None:
-            try:
-                embedding_vector = np.array(avg_embedding, dtype="float32").tolist()
-                pinecone_index.upsert(
-                    vectors=[(roll_number, embedding_vector)],
-                    namespace="face-recognition"
-                )
-                logger.info(f"✅ Pushed embedding to Pinecone for {roll_number}")
-            except Exception as e:
-                logger.error(f"❌ Failed to push embedding to Pinecone: {e}")
 
         return {
             "status": "success",
@@ -1065,6 +1006,76 @@ async def delete_violation(violation_id: str):
     }
 
 # ============================================================================
+# VECTOR SEARCH ENDPOINT (MongoDB Atlas Vector Search)
+# ============================================================================
+
+@app.post("/api/vector-search")
+async def vector_search_endpoint(payload: Dict):
+    """Search for matching faces using MongoDB Atlas Vector Search.
+    
+    Body:
+        embedding: List[float] - 512-dim face embedding vector
+        top_k: int (optional, default 1) - number of top matches
+        
+    Returns:
+        List of matches with roll_number, name, and similarity score
+    """
+    try:
+        embedding = payload.get("embedding")
+        top_k = payload.get("top_k", 1)
+        
+        if not embedding or not isinstance(embedding, list):
+            raise HTTPException(status_code=400, detail="embedding field is required (list of floats)")
+        
+        # Try MongoDB Atlas Vector Search first
+        results = db.vector_search_face(embedding, top_k=top_k)
+        
+        if results:
+            matches = []
+            for r in results:
+                matches.append({
+                    "roll_number": r.get("roll_number"),
+                    "name": r.get("name"),
+                    "similarity": float(r.get("score", 0.0)),
+                    "batch_id": r.get("batch_id")
+                })
+            return {"matches": matches, "source": "mongodb_vector_search"}
+        
+        # Fallback: local cosine search against all student embeddings
+        logger.info("Falling back to local cosine similarity search...")
+        all_students = db.get_all_students()
+        query_vec = np.array(embedding, dtype=np.float32)
+        query_norm = np.linalg.norm(query_vec)
+        
+        if query_norm == 0:
+            return {"matches": [], "source": "local_fallback"}
+        
+        scored = []
+        for student in all_students:
+            stored_emb = student.get("embedding")
+            if not stored_emb:
+                continue
+            stored_vec = np.array(stored_emb, dtype=np.float32)
+            stored_norm = np.linalg.norm(stored_vec)
+            if stored_norm == 0:
+                continue
+            similarity = float(np.dot(query_vec, stored_vec) / (query_norm * stored_norm))
+            scored.append({
+                "roll_number": student.get("roll_number"),
+                "name": student.get("name"),
+                "similarity": similarity,
+                "batch_id": student.get("batch_id")
+            })
+        
+        scored.sort(key=lambda x: x["similarity"], reverse=True)
+        return {"matches": scored[:top_k], "source": "local_fallback"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in vector search: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
 # HEALTH CHECK
 # ============================================================================
 
@@ -1074,7 +1085,7 @@ async def health_check():
     return {
         "status": "running",
         "message": "Face Recognition Attendance System API",
-        "version": "1.0.0"
+        "version": "2.0.0 (MongoDB Vector Search)"
     }
 
 if __name__ == "__main__":
