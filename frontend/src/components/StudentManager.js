@@ -383,7 +383,7 @@ function StudentManager({ apiBase }) {
               <td>
                 {(student.image_url || (student.image_urls && student.image_urls.length > 0)) ? (
                   <img 
-                    src={student.image_url || student.image_urls[0]} 
+                    src={`${student.image_url || student.image_urls[0]}?t=${Date.now()}`} 
                     alt={student.name}
                     style={{
                       width: '50px',
@@ -392,6 +392,7 @@ function StudentManager({ apiBase }) {
                       objectFit: 'cover',
                       border: '2px solid #007bff'
                     }}
+                    onError={(e) => { e.target.style.display = 'none'; }}
                   />
                 ) : (
                   <span>No Image</span>

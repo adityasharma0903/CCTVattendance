@@ -62,6 +62,7 @@ def upload_student_image(image_file, student_id: str, roll_number: str) -> Optio
             public_id=public_id,
             folder=folder_path,
             overwrite=True,
+            invalidate=True,  # Force CDN cache invalidation when overwriting
             resource_type="image",
             tags=["student", "face_recognition", roll_number]
         )
@@ -108,7 +109,8 @@ def upload_student_image_variant(
             image_file,
             public_id=public_id,
             folder=folder_path,
-            overwrite=False,
+            overwrite=True,
+            invalidate=True,  # Force CDN cache invalidation when overwriting
             resource_type="image",
             tags=["student", "face_recognition", roll_number]
         )

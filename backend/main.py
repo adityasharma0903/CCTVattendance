@@ -12,7 +12,6 @@ import numpy as np
 from io import BytesIO
 from deepface import DeepFace
 
-
 # Import Cloudinary utilities
 from cloudinary_utils import (
     upload_student_image,
@@ -49,8 +48,6 @@ app.add_middleware(
 # Data directory
 DATA_DIR = "../data"
 FACE_ENROLL_DETECTOR_BACKEND = os.getenv("FACE_ENROLL_DETECTOR_BACKEND", "retinaface")
-
-
 
 # ============================================================================
 # PYDANTIC MODELS
@@ -295,7 +292,8 @@ async def upload_student_image_endpoint(
             embedding_result = DeepFace.represent(
                 img,
                 model_name="ArcFace",
-                enforce_detection=True
+                enforce_detection=True,
+                detector_backend=FACE_ENROLL_DETECTOR_BACKEND
             )
             embedding = embedding_result[0]["embedding"]
             logger.info(f"✅ Face embedding generated successfully")
@@ -464,7 +462,6 @@ async def upload_student_images_endpoint(
             if old_public_id:
                 delete_student_image(old_public_id)
 
-
         student_data = {
             "student_id": student_id,
             "roll_number": roll_number,
@@ -541,7 +538,8 @@ async def update_student_image_endpoint(
             embedding_result = DeepFace.represent(
                 img,
                 model_name="ArcFace",
-                enforce_detection=True
+                enforce_detection=True,
+                detector_backend=FACE_ENROLL_DETECTOR_BACKEND
             )
             embedding = embedding_result[0]["embedding"]
             logger.info(f"✅ Face embedding generated successfully")
@@ -990,89 +988,22 @@ async def get_student_violations(student_id: str):
     except Exception as e:
         logger.error(f"Error getting student violations: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    violations = load_exam_violations()
-    student_violations = [v for v in violations if v.get("student_id") == student_id]
-    return student_violations
 
 @app.delete("/api/exam-violations/{violation_id}")
 async def delete_violation(violation_id: str):
     """Delete an exam violation record"""
-    violations = load_exam_violations()
-    filtered_violations = [v for v in violations if v.get("violation_id") != violation_id]
-    save_exam_violations(filtered_violations)
-    return {
-        "status": "success",
-        "message": f"Violation {violation_id} deleted"
-    }
-
-# ============================================================================
-# VECTOR SEARCH ENDPOINT (MongoDB Atlas Vector Search)
-# ============================================================================
-
-@app.post("/api/vector-search")
-async def vector_search_endpoint(payload: Dict):
-    """Search for matching faces using MongoDB Atlas Vector Search.
-    
-    Body:
-        embedding: List[float] - 512-dim face embedding vector
-        top_k: int (optional, default 1) - number of top matches
-        
-    Returns:
-        List of matches with roll_number, name, and similarity score
-    """
     try:
-        embedding = payload.get("embedding")
-        top_k = payload.get("top_k", 1)
-        
-        if not embedding or not isinstance(embedding, list):
-            raise HTTPException(status_code=400, detail="embedding field is required (list of floats)")
-        
-        # Try MongoDB Atlas Vector Search first
-        results = db.vector_search_face(embedding, top_k=top_k)
-        
-        if results:
-            matches = []
-            for r in results:
-                matches.append({
-                    "roll_number": r.get("roll_number"),
-                    "name": r.get("name"),
-                    "similarity": float(r.get("score", 0.0)),
-                    "batch_id": r.get("batch_id")
-                })
-            return {"matches": matches, "source": "mongodb_vector_search"}
-        
-        # Fallback: local cosine search against all student embeddings
-        logger.info("Falling back to local cosine similarity search...")
-        all_students = db.get_all_students()
-        query_vec = np.array(embedding, dtype=np.float32)
-        query_norm = np.linalg.norm(query_vec)
-        
-        if query_norm == 0:
-            return {"matches": [], "source": "local_fallback"}
-        
-        scored = []
-        for student in all_students:
-            stored_emb = student.get("embedding")
-            if not stored_emb:
-                continue
-            stored_vec = np.array(stored_emb, dtype=np.float32)
-            stored_norm = np.linalg.norm(stored_vec)
-            if stored_norm == 0:
-                continue
-            similarity = float(np.dot(query_vec, stored_vec) / (query_norm * stored_norm))
-            scored.append({
-                "roll_number": student.get("roll_number"),
-                "name": student.get("name"),
-                "similarity": similarity,
-                "batch_id": student.get("batch_id")
-            })
-        
-        scored.sort(key=lambda x: x["similarity"], reverse=True)
-        return {"matches": scored[:top_k], "source": "local_fallback"}
+        deleted = db.delete_exam_violation(violation_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Violation not found")
+        return {
+            "status": "success",
+            "message": f"Violation {violation_id} deleted"
+        }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in vector search: {e}")
+        logger.error(f"Error deleting violation: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
@@ -1085,7 +1016,7 @@ async def health_check():
     return {
         "status": "running",
         "message": "Face Recognition Attendance System API",
-        "version": "2.0.0 (MongoDB Vector Search)"
+        "version": "1.0.0"
     }
 
 if __name__ == "__main__":

@@ -89,7 +89,8 @@ class MongoDatabase:
             collection = self.db[collection_name]
             for index in indexes:
                 try:
-                    collection.create_index(index)
+                    # create_index expects a list of (field, direction) pairs for compound/single indexes
+                    collection.create_index([index])
                 except Exception as e:
                     logger.warning(f"Could not create index {index} on {collection_name}: {e}")
             logger.info(f"✅ Initialized collection: {collection_name}")
@@ -105,34 +106,54 @@ class MongoDatabase:
         This method logs instructions if the index doesn't exist yet.
         """
         try:
-            # Check if vector search index already exists by trying a dummy search
-            # If it fails, we know the index needs to be created
             collection = self.db["students"]
+            index_name = "face_embedding_index"
+
+            # Preferred check: list Atlas Search indexes directly.
             try:
-                # Try a simple vector search to check if index exists
+                search_indexes = list(collection.list_search_indexes())
+                names = {idx.get("name") for idx in search_indexes if isinstance(idx, dict)}
+                if index_name in names:
+                    logger.info(f"✅ MongoDB Atlas Vector Search index '{index_name}' is active")
+                    return
+            except Exception as e:
+                # Some environments/drivers may not support listing search indexes.
+                logger.debug(f"Could not list search indexes directly: {e}")
+
+            # Fallback: run a tiny probe vector search.
+            try:
                 pipeline = [
                     {
                         "$vectorSearch": {
-                            "index": "face_embedding_index",
+                            "index": index_name,
                             "path": "embedding",
-                            "queryVector": [0.0] * 512,  # ArcFace produces 512-dim vectors
+                            "queryVector": [0.0] * 512,
                             "numCandidates": 1,
                             "limit": 1
                         }
                     }
                 ]
                 list(collection.aggregate(pipeline))
-                logger.info("✅ MongoDB Atlas Vector Search index 'face_embedding_index' is active")
+                logger.info(f"✅ MongoDB Atlas Vector Search index '{index_name}' is active")
+                return
             except Exception as e:
-                error_str = str(e)
-                if "PlanExecutor" in error_str or "vectorSearch" in error_str or "index not found" in error_str.lower():
-                    logger.warning("="*70)
+                error_str = str(e).lower()
+                missing_markers = [
+                    "index not found",
+                    "search index",
+                    "vectorsearch",
+                    "planexecutor",
+                    "does not exist"
+                ]
+
+                if any(marker in error_str for marker in missing_markers):
+                    logger.warning("=" * 70)
                     logger.warning("⚠️  MongoDB Atlas Vector Search index NOT found!")
                     logger.warning("   Please create it in Atlas UI:")
                     logger.warning("   1. Go to MongoDB Atlas → your cluster → 'Atlas Search'")
                     logger.warning("   2. Click 'Create Search Index' → 'JSON Editor'")
-                    logger.warning("   3. Select database: CCTV, collection: students")
-                    logger.warning("   4. Index name: face_embedding_index")
+                    logger.warning(f"   3. Select database: {self.db_name}, collection: students")
+                    logger.warning(f"   4. Index name: {index_name}")
                     logger.warning("   5. Paste this JSON definition:")
                     logger.warning("""   {
      "fields": [{
@@ -144,9 +165,9 @@ class MongoDatabase:
    }""")
                     logger.warning("   6. Click 'Create Search Index'")
                     logger.warning("   Vector search will fall back to local cosine until index is created.")
-                    logger.warning("="*70)
+                    logger.warning("=" * 70)
                 else:
-                    logger.debug(f"Vector search index check: {e}")
+                    logger.debug(f"Vector search index probe failed for a non-index reason: {e}")
         except Exception as e:
             logger.debug(f"Could not check vector search index: {e}")
     
